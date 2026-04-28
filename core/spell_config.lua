@@ -118,6 +118,7 @@ local function get_elements(spell_id)
 
         require_buff = checkbox:new(false, get_hash(key(spell_id, 'require_buff'))),
         buff_combo   = nil,
+        buff_mode    = combo_box:new(0, get_hash(key(spell_id, 'buff_mode'))),  -- 0=Active, 1=Missing
         buff_stacks  = slider_int:new(1, 50, 1, get_hash(key(spell_id, 'buff_stacks'))),
 
         elite_only   = checkbox:new(false, get_hash(key(spell_id, 'elite_only'))),
@@ -295,8 +296,8 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
 
     e.min_enemies:render('Min enemies near you', 'Minimum enemies within AOE check radius (0 = always)', 2)
 
-    -- ---- Require Buff ----
-    e.require_buff:render('Require Buff', 'Only trigger when a specific buff is active on you')
+    -- ---- Buff Condition (Require / Missing) ----
+    e.require_buff:render('Buff Condition', 'Gate this spell on a buff being active OR missing on you. Use "Missing" mode to cast a spell to apply/refresh a buff.')
     if e.require_buff:get() then
         _ensure_buff_combo(e, spell_id)
 
@@ -354,7 +355,14 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
             st.buff_name = label
         end
 
-        e.buff_stacks:render('Min stacks', 'Minimum buff stacks required', 1)
+        e.buff_mode:render('Mode', { 'Active (have buff)', 'Missing (need buff)' },
+            'Active = only cast when buff is on you with at least Min stacks. Missing = only cast when buff is absent or below Min stacks (use to apply/refresh the buff).')
+        local mode = e.buff_mode:get() or 0
+        if mode == 0 then
+            e.buff_stacks:render('Min stacks', 'Minimum buff stacks required to cast', 1)
+        else
+            e.buff_stacks:render('Cast if below stacks', 'Cast if buff is missing OR has fewer than this many stacks', 1)
+        end
     end
 
     -- ---- Resource Condition ----
@@ -478,6 +486,7 @@ function spell_config.get(spell_id)
         require_buff    = e.require_buff:get(),
         buff_hash       = st.buff_hash or 0,
         buff_name       = (st.buff_name ~= '' and st.buff_name) or (_buff_name_cache[tostring(spell_id)] or ''),
+        buff_mode       = e.buff_mode:get(),     -- 0=Active, 1=Missing
         buff_stacks     = e.buff_stacks:get(),
 
         use_resource    = e.use_resource:get(),
@@ -542,6 +551,7 @@ function spell_config.apply(spell_id, cfg)
     _set_element(e.self_cast,     cfg.self_cast)
 
     _set_element(e.require_buff,  cfg.require_buff)
+    _set_element(e.buff_mode,     cfg.buff_mode)
     _set_element(e.buff_stacks,   cfg.buff_stacks)
 
     _set_element(e.use_resource,  cfg.use_resource)

@@ -550,9 +550,20 @@ function rotation_engine.tick(equipped_ids, settings)
         end
 
         if cfg.require_buff then
-            if not _player_has_buff(cfg.buff_hash, cfg.buff_stacks) then
-                logger.log('  SKIP: required buff not active')
-                goto next_spell
+            local buff_mode = cfg.buff_mode or 0
+            local has = _player_has_buff(cfg.buff_hash, cfg.buff_stacks)
+            if buff_mode == 0 then
+                -- Active mode: only cast when buff is present at >= min stacks
+                if not has then
+                    logger.log('  SKIP: required buff not active')
+                    goto next_spell
+                end
+            else
+                -- Missing mode: only cast when buff is absent or below min stacks
+                if has then
+                    logger.log('  SKIP: buff already active (Missing mode)')
+                    goto next_spell
+                end
             end
         end
 
