@@ -455,6 +455,17 @@ function rotation_engine.tick(equipped_ids, settings)
     if not can_act() then return false end
     if get_time_since_inject() < _gcd_until then return false end
 
+    -- Respect orbwalker: only act when in clear/pvp mode (or when hold-key bypass is set)
+    if settings and settings.respect_orb then
+        local orb_mode_val = 0
+        pcall(function() orb_mode_val = orbwalker.get_orb_mode() end)
+        -- 1=none, 2=pvp, 3=clear, 4=flee. Idle ('none') yields control to user.
+        if orb_mode_val == 1 or orb_mode_val == 0 then
+            logger.log('tick: orbwalker idle (mode=' .. tostring(orb_mode_val) .. '), yielding')
+            return false
+        end
+    end
+
     local lp         = get_local_player()
     local player_pos = lp:get_position()
     local range      = settings.scan_range or _scan_range
@@ -635,7 +646,9 @@ function rotation_engine.tick(equipped_ids, settings)
                 logger.log('  SKIP: no valid target in range')
                 local stype = cfg.spell_type or 0
                 local is_melee = (stype == 1) or (stype == 0 and (spell_range or 0) <= 6.0)
-                if is_melee and targets.closest then
+                -- Only move toward the target if the user has explicitly opted into rotation movement.
+                -- Otherwise leave movement to the orbwalker.
+                if is_melee and targets.closest and settings.allow_movement then
                     logger.log('  moving towards closest enemy')
                     try_move_towards(targets.closest, player_pos, spell_range)
                 end

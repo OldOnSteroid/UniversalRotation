@@ -31,6 +31,9 @@ local settings = {
     overlay_show_buffs = false,
 }
 
+-- Track hold-key state so we can short-circuit other systems
+local _hold_key_active = true  -- treated as true when hold-key feature is disabled
+
 local function is_enabled()
     if not gui.elements.enabled:get() then return false end
     if gui.elements.use_keybind:get() then
@@ -38,6 +41,30 @@ local function is_enabled()
         local state = gui.elements.keybind:get_state()
         if key == 0x0A then return false end      -- not bound yet
         if state ~= 1 and state ~= true then return false end
+    end
+
+    -- Hold-to-cast: rotation only runs while the configured key is held
+    if gui.elements.use_hold_key and gui.elements.use_hold_key:get() then
+        local idx = gui.elements.hold_key_combo:get() or 0
+        local codes = spell_config.KEY_PRESS_CODES or {}
+        local vk = codes[idx + 1] or 0x20
+        local held = false
+        pcall(function() held = get_key_state(vk) end)
+        _hold_key_active = held and true or false
+        if not held then return false end
+    else
+        _hold_key_active = true
+    end
+
+    return true
+end
+
+-- Whether the rotation should yield to the orbwalker right now
+local function should_respect_orbwalker()
+    if not gui.elements.respect_orb or not gui.elements.respect_orb:get() then return false end
+    -- If the user is actively hold-casting, don't yield
+    if gui.elements.use_hold_key and gui.elements.use_hold_key:get() and _hold_key_active then
+        return false
     end
     return true
 end
@@ -71,6 +98,8 @@ local function update_settings()
     settings.overlay_x       = gui.elements.overlay_x:get()
     settings.overlay_y       = gui.elements.overlay_y:get()
     settings.overlay_show_buffs = gui.elements.overlay_show_buffs and gui.elements.overlay_show_buffs:get() or false
+    settings.allow_movement     = gui.elements.allow_movement and gui.elements.allow_movement:get() or false
+    settings.respect_orb        = should_respect_orbwalker()
     rotation_engine.set_scan_range(settings.scan_range)
 
     -- Sync buff dropdown filters to buff_provider

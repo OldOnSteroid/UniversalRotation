@@ -48,10 +48,16 @@ gui.elements = {
     use_keybind    = cb(false, 'use_keybind'),
     keybind        = keybind:new(0x0A, true, get_hash(plugin_label .. '_keybind')),
 
+    -- Hold-to-cast: rotation only runs while this key is held
+    use_hold_key   = cb(false, 'use_hold_key'),
+    hold_key_combo = combo_box:new(0, get_hash(plugin_label .. '_hold_key_combo')),
+
     global_tree    = tree_node:new(1),
     scan_range     = sf(5.0, 30.0, 16.0, 'scan_range'),
     anim_delay     = sf(0.0, 0.5,  0.05, 'anim_delay'),
     global_min_enemies = si(0, 15, 0, 'global_min_enemies'),
+    allow_movement = cb(false, 'allow_movement'),       -- pathfinder.request_move for melee positioning
+    respect_orb    = cb(true,  'respect_orb'),          -- only act when orbwalker is active or hold-key is held
     debug_mode     = cb(false, 'debug_mode'),
 
 
@@ -94,6 +100,12 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
         gui.elements.keybind:render('Toggle Key', 'Key to toggle the rotation')
     end
 
+    gui.elements.use_hold_key:render('Hold-to-Cast', 'Rotation only runs while this key is held — lets you move freely when not held. Stacks with Toggle Key (both must be active).')
+    if gui.elements.use_hold_key:get() then
+        local KEY_LABELS = spell_config.KEY_PRESS_LABELS or {}
+        gui.elements.hold_key_combo:render('Hold Key', KEY_LABELS, 'Key to hold while you want the rotation active')
+    end
+
     -- ---- Profile Selector ----
     if profile_names and #profile_names > 0 then
         gui.elements.profile_combo:render('Profile', profile_names, 'Switch between saved profiles for this class. Settings update immediately.')
@@ -108,6 +120,8 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
         gui.elements.scan_range:render('Scan Range (yds)', 'How far to scan for enemies', 1)
         gui.elements.anim_delay:render('Animation Delay (s)', 'Global animation delay after each cast', 2)
         gui.elements.global_min_enemies:render('Global Min Enemies', 'Minimum enemies required globally before any spell fires (0 = off). Per-spell min is also respected — whichever is higher wins.', 1)
+        gui.elements.respect_orb:render('Respect Orbwalker', 'Only run the rotation while the orbwalker is in clear/pvp mode (or while Hold-to-Cast is held). Recommended ON to avoid fighting your orbwalker.')
+        gui.elements.allow_movement:render('Allow Movement', 'Let the rotation move the character into melee range (pathfinder.request_move). Turn OFF if you want the orbwalker to handle ALL movement.')
         gui.elements.debug_mode:render('Debug Mode', 'Print cast info to console')
 
         gui.elements.overlay_enabled:render('Overlay', 'Show/hide the on-screen overlay')

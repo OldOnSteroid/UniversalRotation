@@ -34,9 +34,11 @@ local KEY_PRESS_CODES  = { 0x20,   0x45, 0x51, 0x52, 0x46, 0x47, 0x58, 0x5A,
 local HOLD_KEY_LABELS = { 'Shift', 'Ctrl', 'Alt' }
 local HOLD_KEY_CODES  = { 0x10,   0x11,  0x12 }
 
--- Expose tables so rotation_engine can read actual VK codes
-spell_config.KEY_PRESS_CODES = KEY_PRESS_CODES
-spell_config.HOLD_KEY_CODES  = HOLD_KEY_CODES
+-- Expose tables so other modules can read actual VK codes / labels
+spell_config.KEY_PRESS_CODES  = KEY_PRESS_CODES
+spell_config.KEY_PRESS_LABELS = KEY_PRESS_LABELS
+spell_config.HOLD_KEY_CODES   = HOLD_KEY_CODES
+spell_config.HOLD_KEY_LABELS  = HOLD_KEY_LABELS
 
 local function key(spell_id, suffix)
     return plugin_label .. '_spell_' .. tostring(spell_id) .. '_' .. suffix
