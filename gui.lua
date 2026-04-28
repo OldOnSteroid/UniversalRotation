@@ -50,7 +50,7 @@ gui.elements = {
 
     -- Hold-to-cast: rotation only runs while this key is held
     use_hold_key   = cb(false, 'use_hold_key'),
-    hold_key_combo = combo_box:new(0, get_hash(plugin_label .. '_hold_key_combo')),
+    hold_keybind   = keybind:new(0x0A, false, get_hash(plugin_label .. '_hold_keybind')),
 
     global_tree    = tree_node:new(1),
     scan_range     = sf(5.0, 30.0, 16.0, 'scan_range'),
@@ -102,8 +102,7 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
 
     gui.elements.use_hold_key:render('Hold-to-Cast', 'Rotation only runs while this key is held — lets you move freely when not held. Stacks with Toggle Key (both must be active).')
     if gui.elements.use_hold_key:get() then
-        local KEY_LABELS = spell_config.KEY_PRESS_LABELS or {}
-        gui.elements.hold_key_combo:render('Hold Key', KEY_LABELS, 'Key to hold while you want the rotation active')
+        gui.elements.hold_keybind:render('Hold Key', 'Press the key you want to hold to activate the rotation')
     end
 
     -- ---- Profile Selector ----

@@ -45,9 +45,9 @@ local function is_enabled()
 
     -- Hold-to-cast: rotation only runs while the configured key is held
     if gui.elements.use_hold_key and gui.elements.use_hold_key:get() then
-        local idx = gui.elements.hold_key_combo:get() or 0
-        local codes = spell_config.KEY_PRESS_CODES or {}
-        local vk = codes[idx + 1] or 0x20
+        local vk = 0x0A
+        pcall(function() vk = gui.elements.hold_keybind:get_key() end)
+        if vk == 0x0A then return false end  -- not bound yet
         local held = false
         pcall(function() held = get_key_state(vk) end)
         _hold_key_active = held and true or false
