@@ -531,46 +531,67 @@ local function _set_element(el, val)
     end
 end
 
+-- Sliders cache value by hash, so re-using the same hash with a new initial
+-- value gets ignored. Bumping a load counter on each apply yields a fresh hash
+-- so the loaded JSON value actually takes effect.
+local _load_seq = 0
+
+local function _slider_hash(spell_id, suffix)
+    return get_hash(key(spell_id, suffix) .. '_v' .. tostring(_load_seq))
+end
+
+local function _replace_si(e, field, min_v, max_v, val, spell_id, suffix)
+    if type(val) ~= 'number' then return end
+    e[field] = slider_int:new(min_v, max_v, val, _slider_hash(spell_id, suffix))
+end
+
+local function _replace_sf(e, field, min_v, max_v, val, spell_id, suffix)
+    if type(val) ~= 'number' then return end
+    e[field] = slider_float:new(min_v, max_v, val, _slider_hash(spell_id, suffix))
+end
+
 function spell_config.apply(spell_id, cfg)
     if type(cfg) ~= 'table' then return end
     local e  = get_elements(spell_id)
     local st = _get_buff_state(spell_id)
     local cs = _get_chain_state(spell_id)
 
+    _load_seq = _load_seq + 1
+
     _set_element(e.enabled,       cfg.enabled)
-    _set_element(e.priority,      cfg.priority)
-    _set_element(e.cooldown,      cfg.cooldown)
-    _set_element(e.charges,       cfg.charges)
+    _replace_si(e, 'priority',          1,   10,   cfg.priority,       spell_id, 'priority')
+    _replace_sf(e, 'cooldown',          0.0, 5.0,  cfg.cooldown,       spell_id, 'cooldown')
+    _replace_si(e, 'charges',           1,   5,    cfg.charges,        spell_id, 'charges')
     _set_element(e.spell_type,    cfg.spell_type)
     _set_element(e.target_mode,   cfg.target_mode)
-    _set_element(e.range,         cfg.range)
-    _set_element(e.aoe_range,     cfg.aoe_range)
+    _replace_sf(e, 'range',             1.0, 30.0, cfg.range,          spell_id, 'range')
+    _replace_sf(e, 'aoe_range',         1.0, 20.0, cfg.aoe_range,      spell_id, 'aoe_range')
     _set_element(e.elite_only,    cfg.elite_only)
     _set_element(e.boss_only,     cfg.boss_only)
-    _set_element(e.min_enemies,   cfg.min_enemies)
+    _replace_si(e, 'min_enemies',       0,   15,   cfg.min_enemies,    spell_id, 'min_enemies')
     _set_element(e.self_cast,     cfg.self_cast)
 
     _set_element(e.require_buff,  cfg.require_buff)
     _set_element(e.buff_mode,     cfg.buff_mode)
-    _set_element(e.buff_stacks,   cfg.buff_stacks)
+    _replace_si(e, 'buff_stacks',       1,   50,   cfg.buff_stacks,    spell_id, 'buff_stacks')
 
     _set_element(e.use_resource,  cfg.use_resource)
     _set_element(e.resource_mode, cfg.resource_mode)
-    _set_element(e.resource_pct,  cfg.resource_pct)
+    _replace_si(e, 'resource_pct',      1,   100,  cfg.resource_pct,   spell_id, 'resource_pct')
 
     _set_element(e.use_health,    cfg.use_health)
     _set_element(e.health_mode,   cfg.health_mode)
-    _set_element(e.health_pct,    cfg.health_pct)
+    _replace_si(e, 'health_pct',        1,   100,  cfg.health_pct,     spell_id, 'health_pct')
 
     _set_element(e.use_chain,     cfg.use_chain)
-    _set_element(e.chain_boost,   cfg.chain_boost)
-    _set_element(e.chain_duration, cfg.chain_duration)
+    _replace_si(e, 'chain_boost',       1,   9,    cfg.chain_boost,    spell_id, 'chain_boost')
+    _replace_sf(e, 'chain_duration',    0.5, 10.0, cfg.chain_duration, spell_id, 'chain_duration')
 
     _set_element(e.use_stack_pri,        cfg.use_stack_pri)
     _set_element(e.stack_pri_use_buff,   cfg.stack_pri_use_buff)
-    _set_element(e.stack_pri_count,      cfg.stack_pri_count)
-    _set_element(e.stack_pri_below_pri,  cfg.stack_pri_below_pri)
-    _set_element(e.stack_pri_reset,      cfg.stack_pri_reset)
+    _replace_si(e, 'stack_pri_count',     1,   20,   cfg.stack_pri_count,     spell_id, 'stack_pri_count')
+    _replace_si(e, 'stack_pri_below_pri', 1,   10,   cfg.stack_pri_below_pri, spell_id, 'stack_pri_below_pri')
+    _replace_sf(e, 'stack_pri_reset',     0.5, 15.0, cfg.stack_pri_reset,     spell_id, 'stack_pri_reset')
     _set_element(e.stack_pri_targeted,   cfg.stack_pri_targeted)
     do
         local sps = _get_stack_pri_buff_state(spell_id)

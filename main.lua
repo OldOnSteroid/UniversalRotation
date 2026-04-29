@@ -100,6 +100,9 @@ local function update_settings()
     settings.overlay_show_buffs = gui.elements.overlay_show_buffs and gui.elements.overlay_show_buffs:get() or false
     settings.allow_movement     = gui.elements.allow_movement and gui.elements.allow_movement:get() or false
     settings.respect_orb        = should_respect_orbwalker()
+    -- True while the user is actively hold-casting; rotation_engine uses this to
+    -- suppress cursor warps and pathfinder moves so manual movement input wins.
+    settings.hold_active        = gui.elements.use_hold_key and gui.elements.use_hold_key:get() and _hold_key_active or false
     rotation_engine.set_scan_range(settings.scan_range)
 
     -- Sync buff dropdown filters to buff_provider
@@ -138,6 +141,20 @@ local function _set_element(el, val)
     if not el then return end
     if type(el.set) == 'function' then pcall(el.set, el, val); return end
     if type(el.set_value) == 'function' then pcall(el.set_value, el, val); return end
+end
+
+-- Sliders cache value by hash, so we need a fresh hash to override stored state.
+local _global_load_seq = 0
+local function _global_slider_hash(name)
+    return get_hash(plugin_label .. '_' .. name .. '_v' .. tostring(_global_load_seq))
+end
+local function _replace_global_si(field, min_v, max_v, val, name)
+    if type(val) ~= 'number' then return end
+    gui.elements[field] = slider_int:new(min_v, max_v, val, _global_slider_hash(name))
+end
+local function _replace_global_sf(field, min_v, max_v, val, name)
+    if type(val) ~= 'number' then return end
+    gui.elements[field] = slider_float:new(min_v, max_v, val, _global_slider_hash(name))
 end
 
 local function _class_key()
@@ -302,13 +319,14 @@ local function _import_profile(class_key, profile_name, silent)
     end
 
     if type(data.global) == 'table' then
-        _set_element(gui.elements.scan_range,         data.global.scan_range)
-        _set_element(gui.elements.anim_delay,         data.global.anim_delay)
-        _set_element(gui.elements.global_min_enemies, data.global.global_min_enemies)
+        _global_load_seq = _global_load_seq + 1
+        _replace_global_sf('scan_range',         5.0, 30.0, data.global.scan_range,         'scan_range')
+        _replace_global_sf('anim_delay',         0.0, 0.5,  data.global.anim_delay,         'anim_delay')
+        _replace_global_si('global_min_enemies', 0,   15,   data.global.global_min_enemies, 'global_min_enemies')
         _set_element(gui.elements.debug_mode,         data.global.debug_mode)
         _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
-        _set_element(gui.elements.overlay_x,          data.global.overlay_x)
-        _set_element(gui.elements.overlay_y,          data.global.overlay_y)
+        _replace_global_si('overlay_x',          0,   3000, data.global.overlay_x,          'overlay_x')
+        _replace_global_si('overlay_y',          0,   3000, data.global.overlay_y,          'overlay_y')
         _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
     end
 

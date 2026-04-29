@@ -308,9 +308,10 @@ end
 
 -- Key-press cast: press a single key (evade / spacebar style)
 -- aim_mode: 0=no aim, 1=towards enemy, 2=orbwalker direction
-local function try_key_cast(spell_id, vk_code, is_virtual, aim_mode, player_pos, scan_range)
-    logger.log(string.format('try_key_cast: spell=%s vk=0x%02X virtual=%s aim=%d',
-        tostring(spell_id), vk_code or 0x20, tostring(is_virtual), aim_mode or 0))
+-- suppress_cursor: when true, never move the mouse cursor (for hold-cast manual control)
+local function try_key_cast(spell_id, vk_code, is_virtual, aim_mode, player_pos, scan_range, suppress_cursor)
+    logger.log(string.format('try_key_cast: spell=%s vk=0x%02X virtual=%s aim=%d suppress=%s',
+        tostring(spell_id), vk_code or 0x20, tostring(is_virtual), aim_mode or 0, tostring(suppress_cursor)))
 
     if not is_virtual then
         if not utility.is_spell_ready(spell_id) then logger.log('try_key_cast: not ready'); return false end
@@ -319,6 +320,12 @@ local function try_key_cast(spell_id, vk_code, is_virtual, aim_mode, player_pos,
 
     vk_code   = vk_code or 0x20
     aim_mode  = aim_mode or 0
+
+    if suppress_cursor then
+        logger.log('try_key_cast: cursor suppressed, pressing key only')
+        utility.send_key_press(vk_code)
+        return true
+    end
 
     if aim_mode ~= 0 and player_pos then
         local aim_pos = _get_aim_target(aim_mode, player_pos, scan_range)
@@ -351,7 +358,7 @@ end
 -- Moves cursor to target_pos before casting so the skill fires at the correct target,
 -- then restores the cursor to its original position.
 -- Slot 0=key '1' (0x31), slot 1=key '2' (0x32), etc.
-local function try_force_standstill_cast(spell_id, hold_key, slot, is_virtual, target_pos)
+local function try_force_standstill_cast(spell_id, hold_key, slot, is_virtual, target_pos, suppress_cursor)
     if not is_virtual then
         if not utility.is_spell_ready(spell_id) then return false end
         if not utility.is_spell_affordable(spell_id) then return false end
@@ -363,7 +370,7 @@ local function try_force_standstill_cast(spell_id, hold_key, slot, is_virtual, t
 
     -- Move cursor to the target position so FSS fires in the right direction
     local cur_sx, cur_sy = nil, nil
-    if target_pos then
+    if target_pos and not suppress_cursor then
         local sx, sy = _world_to_screen(target_pos)
         if sx and sy then
             local cur = get_cursor_position()
@@ -591,15 +598,16 @@ function rotation_engine.tick(equipped_ids, settings)
         -- always use the normal targeted cast regardless of configured cast_method.
         local function dispatch_cast(fallback_fn, aim_pos)
             local in_build_phase = cfg.stack_pri_targeted and _is_in_build_phase(spell_id, cfg)
+            local suppress_cursor = settings and settings.hold_active and true or false
             if in_build_phase then
                 logger.log('  dispatch: FORCED normal cast (build phase)')
                 return fallback_fn()
             elseif cast_method == 1 then
                 logger.log('  dispatch: KEY PRESS')
-                return try_key_cast(spell_id, cfg.evade_key, is_virtual, cfg.evade_aim_mode, player_pos, range)
+                return try_key_cast(spell_id, cfg.evade_key, is_virtual, cfg.evade_aim_mode, player_pos, range, suppress_cursor)
             elseif cast_method == 2 then
                 logger.log('  dispatch: FORCE STAND STILL')
-                return try_force_standstill_cast(spell_id, cfg.force_hold_key, cfg.skill_slot, is_virtual, aim_pos)
+                return try_force_standstill_cast(spell_id, cfg.force_hold_key, cfg.skill_slot, is_virtual, aim_pos, suppress_cursor)
             else
                 logger.log('  dispatch: NORMAL cast')
                 return fallback_fn()
@@ -659,7 +667,7 @@ function rotation_engine.tick(equipped_ids, settings)
                 local is_melee = (stype == 1) or (stype == 0 and (spell_range or 0) <= 6.0)
                 -- Only move toward the target if the user has explicitly opted into rotation movement.
                 -- Otherwise leave movement to the orbwalker.
-                if is_melee and targets.closest and settings.allow_movement then
+                if is_melee and targets.closest and settings.allow_movement and not settings.hold_active then
                     logger.log('  moving towards closest enemy')
                     try_move_towards(targets.closest, player_pos, spell_range)
                 end
