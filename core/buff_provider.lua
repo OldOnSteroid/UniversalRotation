@@ -4,6 +4,11 @@ local buff_provider = {}
 -- Keyed by hash: { [hash] = raw_name_string }
 local _buff_history = {}
 
+-- Snapshot of which buffs are currently active on the player. Refreshed only
+-- by observe_player_buffs() on a slow tick — never read from a render frame.
+-- Keyed by hash: { [hash] = true }
+local _active_set = {}
+
 -- Category filter: which categories are visible in dropdowns
 -- "skill" is always shown; others default to hidden
 local _category_filters = {
@@ -21,10 +26,33 @@ local _category_filters = {
 -- Spell-name remap table
 local _name_overrides = {}
 
+-- Cached dropdown payload (avoid rebuilding 60x/second while the menu is open)
+local _choices_cache       = nil  -- { items, hashes, index_by_hash, filter_sig }
+local _choices_cache_until = 0
+local _CHOICES_TTL         = 1.0  -- seconds
+
 local function safe_call(fn, ...)
     local ok, v = pcall(fn, ...)
     if not ok then return nil end
     return v
+end
+
+local function _now()
+    if get_time_since_inject then return get_time_since_inject() end
+    return 0
+end
+
+local function _filter_signature()
+    return string.format('%s%s%s%s%s%s%s%s%s',
+        _category_filters.skill    and '1' or '0',
+        _category_filters.paragon  and '1' or '0',
+        _category_filters.talent   and '1' or '0',
+        _category_filters.item     and '1' or '0',
+        _category_filters.npc      and '1' or '0',
+        _category_filters.bsk      and '1' or '0',
+        _category_filters.dungeon  and '1' or '0',
+        _category_filters.passive  and '1' or '0',
+        _category_filters.internal and '1' or '0')
 end
 
 -- Classify a raw buff name into a category
@@ -144,9 +172,12 @@ end
 
 -- ---- Filter control (called from gui) ----
 function buff_provider.set_filter(category, enabled)
-    if _category_filters[category] ~= nil then
+    if _category_filters[category] ~= nil and _category_filters[category] ~= enabled then
         _category_filters[category] = enabled
+        _choices_cache = nil  -- filter changed, invalidate cache
+        return true
     end
+    return false
 end
 
 function buff_provider.get_filter(category)
@@ -160,47 +191,25 @@ end
 -- ---- Dropdown builders ----
 
 function buff_provider.get_player_buff_choices()
+    local now = _now()
+    local sig = _filter_signature()
+    if _choices_cache and _choices_cache.filter_sig == sig and now < _choices_cache_until then
+        return _choices_cache.items, _choices_cache.hashes, _choices_cache.index_by_hash
+    end
+
     local items  = { 'None' }
     local hashes = { 0 }
     local index_by_hash = { [0] = 0 }
 
-    local player = get_local_player and get_local_player()
-    if not player or type(player.get_buffs) ~= 'function' then
-        local tmp = {}
-        for h, raw in pairs(_buff_history) do
-            if is_visible(raw) then
-                tmp[#tmp + 1] = { name = raw, hash = h, active = false }
-            end
-        end
-        table.sort(tmp, function(a, b) return a.name < b.name end)
-        for i, it in ipairs(tmp) do
-            local label = pretty_name(it.name) .. ' (Not Active)'
-            items[#items + 1] = label
-            hashes[#hashes + 1] = it.hash
-            index_by_hash[it.hash] = i
-        end
-        return items, hashes, index_by_hash
-    end
-
-    -- Read current buffs and update history
-    local buffs = safe_call(player.get_buffs, player) or {}
-    local active_set = {}
-
-    for _, b in ipairs(buffs) do
-        local h, n = read_buff(b)
-        if h then
-            remember_buff(h, n)
-            active_set[h] = true
-        end
-    end
-
-    -- Build combined list filtered by visible categories
+    -- Read purely from cached state. The active set is refreshed on a slow
+    -- tick by observe_player_buffs(); we do NOT touch live game data here,
+    -- so a buff disappearing mid-render can't reach into this code path.
     local active_list = {}
     local inactive_list = {}
 
     for h, raw in pairs(_buff_history) do
         if is_visible(raw) then
-            if active_set[h] then
+            if _active_set[h] then
                 active_list[#active_list + 1] = { name = raw, hash = h, active = true }
             else
                 inactive_list[#inactive_list + 1] = { name = raw, hash = h, active = false }
@@ -225,6 +234,9 @@ function buff_provider.get_player_buff_choices()
         index_by_hash[it.hash] = #items - 1
     end
 
+    _choices_cache = { items = items, hashes = hashes, index_by_hash = index_by_hash, filter_sig = sig }
+    _choices_cache_until = now + _CHOICES_TTL
+
     return items, hashes, index_by_hash
 end
 
@@ -241,7 +253,12 @@ function buff_provider.get_available_buffs_and_missing(saved_hash, saved_name)
         return items, hashes
     end
 
-    -- Buff not in the visible list — add it regardless of filter so the user's selection isn't lost
+    -- Buff not in the visible list — copy first (the source may be cached) then add the saved selection
+    local items_out  = {}
+    local hashes_out = {}
+    for i = 1, #items  do items_out[i]  = items[i]  end
+    for i = 1, #hashes do hashes_out[i] = hashes[i] end
+
     local raw_name = tostring(saved_name or '')
     if raw_name == '' then raw_name = 'Buff #' .. tostring(saved_hash) end
 
@@ -251,10 +268,10 @@ function buff_provider.get_available_buffs_and_missing(saved_hash, saved_name)
     local tag = is_visible(raw_name) and ' (Not Active)' or (' (Not Active) [' .. cat .. ']')
     local label = pretty_name(raw_name) .. tag
 
-    table.insert(items, 2, label)
-    table.insert(hashes, 2, saved_hash)
+    table.insert(items_out, 2, label)
+    table.insert(hashes_out, 2, saved_hash)
 
-    return items, hashes
+    return items_out, hashes_out
 end
 
 function buff_provider.get_active_buffs()
@@ -290,6 +307,41 @@ function buff_provider.get_active_buffs()
     return out
 end
 
+-- Cheap periodic observation: scan current player buffs, refresh the cached
+-- active-set, and remember any new hashes. This is the ONLY place where
+-- player.get_buffs() is called for dropdown purposes — render frames never
+-- touch live game data, so a buff disappearing mid-frame can't crash us.
+-- Returns true iff a new hash was added to history (callers use that to
+-- invalidate downstream dropdown caches).
+function buff_provider.observe_player_buffs()
+    local player = get_local_player and get_local_player()
+    if not player or type(player.get_buffs) ~= 'function' then return false end
+
+    local buffs = safe_call(player.get_buffs, player)
+    if type(buffs) ~= 'table' then return false end
+
+    local new_active = {}
+    local added = false
+
+    for _, b in ipairs(buffs) do
+        local ok, h, n = pcall(read_buff, b)
+        if ok and h then
+            new_active[h] = true
+            if not _buff_history[h] then
+                _buff_history[h] = n or ('Buff #' .. tostring(h))
+                added = true
+            end
+        end
+    end
+
+    _active_set = new_active
+
+    if added then
+        _choices_cache = nil  -- new buff in history -> invalidate dropdown cache
+    end
+    return added
+end
+
 -- Import buff history from a profile (stores all, filtering at display)
 function buff_provider.import_history(history_table)
     if type(history_table) ~= 'table' then return end
@@ -313,6 +365,8 @@ end
 -- Clear history (called on class change)
 function buff_provider.clear_history()
     _buff_history = {}
+    _active_set = {}
+    _choices_cache = nil
 end
 
 return buff_provider

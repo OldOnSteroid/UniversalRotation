@@ -106,14 +106,16 @@ local function update_settings()
     rotation_engine.set_scan_range(settings.scan_range)
 
     -- Sync buff dropdown filters to buff_provider
-    buff_provider.set_filter('paragon',  gui.elements.bf_paragon  and gui.elements.bf_paragon:get()  or false)
-    buff_provider.set_filter('talent',   gui.elements.bf_talent   and gui.elements.bf_talent:get()   or false)
-    buff_provider.set_filter('item',     gui.elements.bf_item     and gui.elements.bf_item:get()     or false)
-    buff_provider.set_filter('npc',      gui.elements.bf_npc      and gui.elements.bf_npc:get()      or false)
-    buff_provider.set_filter('bsk',      gui.elements.bf_bsk      and gui.elements.bf_bsk:get()      or false)
-    buff_provider.set_filter('dungeon',  gui.elements.bf_dungeon  and gui.elements.bf_dungeon:get()  or false)
-    buff_provider.set_filter('passive',  gui.elements.bf_passive  and gui.elements.bf_passive:get()  or false)
-    buff_provider.set_filter('internal', gui.elements.bf_internal and gui.elements.bf_internal:get() or false)
+    local fchanged = false
+    fchanged = buff_provider.set_filter('paragon',  gui.elements.bf_paragon  and gui.elements.bf_paragon:get()  or false) or fchanged
+    fchanged = buff_provider.set_filter('talent',   gui.elements.bf_talent   and gui.elements.bf_talent:get()   or false) or fchanged
+    fchanged = buff_provider.set_filter('item',     gui.elements.bf_item     and gui.elements.bf_item:get()     or false) or fchanged
+    fchanged = buff_provider.set_filter('npc',      gui.elements.bf_npc      and gui.elements.bf_npc:get()      or false) or fchanged
+    fchanged = buff_provider.set_filter('bsk',      gui.elements.bf_bsk      and gui.elements.bf_bsk:get()      or false) or fchanged
+    fchanged = buff_provider.set_filter('dungeon',  gui.elements.bf_dungeon  and gui.elements.bf_dungeon:get()  or false) or fchanged
+    fchanged = buff_provider.set_filter('passive',  gui.elements.bf_passive  and gui.elements.bf_passive:get()  or false) or fchanged
+    fchanged = buff_provider.set_filter('internal', gui.elements.bf_internal and gui.elements.bf_internal:get() or false) or fchanged
+    if fchanged then spell_config.invalidate_buff_lists() end
 end
 
 local function _pretty_spell_name(raw)
@@ -141,20 +143,6 @@ local function _set_element(el, val)
     if not el then return end
     if type(el.set) == 'function' then pcall(el.set, el, val); return end
     if type(el.set_value) == 'function' then pcall(el.set_value, el, val); return end
-end
-
--- Sliders cache value by hash, so we need a fresh hash to override stored state.
-local _global_load_seq = 0
-local function _global_slider_hash(name)
-    return get_hash(plugin_label .. '_' .. name .. '_v' .. tostring(_global_load_seq))
-end
-local function _replace_global_si(field, min_v, max_v, val, name)
-    if type(val) ~= 'number' then return end
-    gui.elements[field] = slider_int:new(min_v, max_v, val, _global_slider_hash(name))
-end
-local function _replace_global_sf(field, min_v, max_v, val, name)
-    if type(val) ~= 'number' then return end
-    gui.elements[field] = slider_float:new(min_v, max_v, val, _global_slider_hash(name))
 end
 
 local function _class_key()
@@ -319,14 +307,13 @@ local function _import_profile(class_key, profile_name, silent)
     end
 
     if type(data.global) == 'table' then
-        _global_load_seq = _global_load_seq + 1
-        _replace_global_sf('scan_range',         5.0, 30.0, data.global.scan_range,         'scan_range')
-        _replace_global_sf('anim_delay',         0.0, 0.5,  data.global.anim_delay,         'anim_delay')
-        _replace_global_si('global_min_enemies', 0,   15,   data.global.global_min_enemies, 'global_min_enemies')
+        _set_element(gui.elements.scan_range,         data.global.scan_range)
+        _set_element(gui.elements.anim_delay,         data.global.anim_delay)
+        _set_element(gui.elements.global_min_enemies, data.global.global_min_enemies)
         _set_element(gui.elements.debug_mode,         data.global.debug_mode)
         _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
-        _replace_global_si('overlay_x',          0,   3000, data.global.overlay_x,          'overlay_x')
-        _replace_global_si('overlay_y',          0,   3000, data.global.overlay_y,          'overlay_y')
+        _set_element(gui.elements.overlay_x,          data.global.overlay_x)
+        _set_element(gui.elements.overlay_y,          data.global.overlay_y)
         _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
     end
 
@@ -733,11 +720,22 @@ local function render_overlay()
 
 end
 
+local _last_buff_observe = -999
+local function _observe_buffs_throttled()
+    local now = get_time_since_inject()
+    if now - _last_buff_observe < 1.0 then return end
+    _last_buff_observe = now
+    if buff_provider.observe_player_buffs() then
+        spell_config.invalidate_buff_lists()
+    end
+end
+
 on_update(function()
     handle_class_profiles()
     refresh_equipped()
     update_settings()
     handle_profile_io()
+    _observe_buffs_throttled()
 
     if not is_enabled() then return end
 

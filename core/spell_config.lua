@@ -10,6 +10,14 @@ local _buff_state = {}
 -- These are plain numbers/values so we store them in a side table, not UI elements
 local _chain_state = {}
 
+-- Versioned cache for buff dropdown lists. The list is built ONCE per spell on
+-- first render after a profile load or filter change, then reused. Bumping
+-- _buff_list_version forces every spell to rebuild on its next render.
+local _buff_list_version = 0
+function spell_config.invalidate_buff_lists()
+    _buff_list_version = _buff_list_version + 1
+end
+
 
 local buff_provider = require 'core.buff_provider'
 local target_selector = require 'core.target_selector'
@@ -307,7 +315,12 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
             stored_name = _buff_name_cache[tostring(spell_id)] or ''
         end
 
-        local items, hashes = buff_provider.get_available_buffs_and_missing(stored_hash, stored_name)
+        -- Build the dropdown list once per spell, then reuse until version bumps
+        if e._buff_list_v ~= _buff_list_version or not e._buff_items then
+            e._buff_items, e._buff_hashes = buff_provider.get_available_buffs_and_missing(stored_hash, stored_name)
+            e._buff_list_v = _buff_list_version
+        end
+        local items, hashes = e._buff_items, e._buff_hashes
 
         local desired_idx = 0
         if stored_hash ~= 0 then
@@ -390,7 +403,13 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
 
             local stored_hash = sps.buff_hash or 0
             local stored_name = sps.buff_name or ''
-            local items, hashes = buff_provider.get_available_buffs_and_missing(stored_hash, stored_name)
+
+            -- Build once per version bump, then reuse
+            if e._sp_buff_list_v ~= _buff_list_version or not e._sp_buff_items then
+                e._sp_buff_items, e._sp_buff_hashes = buff_provider.get_available_buffs_and_missing(stored_hash, stored_name)
+                e._sp_buff_list_v = _buff_list_version
+            end
+            local items, hashes = e._sp_buff_items, e._sp_buff_hashes
 
             local desired_idx = 0
             if stored_hash ~= 0 then
@@ -531,67 +550,46 @@ local function _set_element(el, val)
     end
 end
 
--- Sliders cache value by hash, so re-using the same hash with a new initial
--- value gets ignored. Bumping a load counter on each apply yields a fresh hash
--- so the loaded JSON value actually takes effect.
-local _load_seq = 0
-
-local function _slider_hash(spell_id, suffix)
-    return get_hash(key(spell_id, suffix) .. '_v' .. tostring(_load_seq))
-end
-
-local function _replace_si(e, field, min_v, max_v, val, spell_id, suffix)
-    if type(val) ~= 'number' then return end
-    e[field] = slider_int:new(min_v, max_v, val, _slider_hash(spell_id, suffix))
-end
-
-local function _replace_sf(e, field, min_v, max_v, val, spell_id, suffix)
-    if type(val) ~= 'number' then return end
-    e[field] = slider_float:new(min_v, max_v, val, _slider_hash(spell_id, suffix))
-end
-
 function spell_config.apply(spell_id, cfg)
     if type(cfg) ~= 'table' then return end
     local e  = get_elements(spell_id)
     local st = _get_buff_state(spell_id)
     local cs = _get_chain_state(spell_id)
 
-    _load_seq = _load_seq + 1
-
     _set_element(e.enabled,       cfg.enabled)
-    _replace_si(e, 'priority',          1,   10,   cfg.priority,       spell_id, 'priority')
-    _replace_sf(e, 'cooldown',          0.0, 5.0,  cfg.cooldown,       spell_id, 'cooldown')
-    _replace_si(e, 'charges',           1,   5,    cfg.charges,        spell_id, 'charges')
+    _set_element(e.priority,      cfg.priority)
+    _set_element(e.cooldown,      cfg.cooldown)
+    _set_element(e.charges,       cfg.charges)
     _set_element(e.spell_type,    cfg.spell_type)
     _set_element(e.target_mode,   cfg.target_mode)
-    _replace_sf(e, 'range',             1.0, 30.0, cfg.range,          spell_id, 'range')
-    _replace_sf(e, 'aoe_range',         1.0, 20.0, cfg.aoe_range,      spell_id, 'aoe_range')
+    _set_element(e.range,         cfg.range)
+    _set_element(e.aoe_range,     cfg.aoe_range)
     _set_element(e.elite_only,    cfg.elite_only)
     _set_element(e.boss_only,     cfg.boss_only)
-    _replace_si(e, 'min_enemies',       0,   15,   cfg.min_enemies,    spell_id, 'min_enemies')
+    _set_element(e.min_enemies,   cfg.min_enemies)
     _set_element(e.self_cast,     cfg.self_cast)
 
     _set_element(e.require_buff,  cfg.require_buff)
     _set_element(e.buff_mode,     cfg.buff_mode)
-    _replace_si(e, 'buff_stacks',       1,   50,   cfg.buff_stacks,    spell_id, 'buff_stacks')
+    _set_element(e.buff_stacks,   cfg.buff_stacks)
 
     _set_element(e.use_resource,  cfg.use_resource)
     _set_element(e.resource_mode, cfg.resource_mode)
-    _replace_si(e, 'resource_pct',      1,   100,  cfg.resource_pct,   spell_id, 'resource_pct')
+    _set_element(e.resource_pct,  cfg.resource_pct)
 
     _set_element(e.use_health,    cfg.use_health)
     _set_element(e.health_mode,   cfg.health_mode)
-    _replace_si(e, 'health_pct',        1,   100,  cfg.health_pct,     spell_id, 'health_pct')
+    _set_element(e.health_pct,    cfg.health_pct)
 
     _set_element(e.use_chain,     cfg.use_chain)
-    _replace_si(e, 'chain_boost',       1,   9,    cfg.chain_boost,    spell_id, 'chain_boost')
-    _replace_sf(e, 'chain_duration',    0.5, 10.0, cfg.chain_duration, spell_id, 'chain_duration')
+    _set_element(e.chain_boost,   cfg.chain_boost)
+    _set_element(e.chain_duration, cfg.chain_duration)
 
     _set_element(e.use_stack_pri,        cfg.use_stack_pri)
     _set_element(e.stack_pri_use_buff,   cfg.stack_pri_use_buff)
-    _replace_si(e, 'stack_pri_count',     1,   20,   cfg.stack_pri_count,     spell_id, 'stack_pri_count')
-    _replace_si(e, 'stack_pri_below_pri', 1,   10,   cfg.stack_pri_below_pri, spell_id, 'stack_pri_below_pri')
-    _replace_sf(e, 'stack_pri_reset',     0.5, 15.0, cfg.stack_pri_reset,     spell_id, 'stack_pri_reset')
+    _set_element(e.stack_pri_count,      cfg.stack_pri_count)
+    _set_element(e.stack_pri_below_pri,  cfg.stack_pri_below_pri)
+    _set_element(e.stack_pri_reset,      cfg.stack_pri_reset)
     _set_element(e.stack_pri_targeted,   cfg.stack_pri_targeted)
     do
         local sps = _get_stack_pri_buff_state(spell_id)
@@ -628,6 +626,13 @@ function spell_config.apply(spell_id, cfg)
     st.last_list_sig = nil
     e.buff_combo  = nil
     e.chain_combo = nil  -- will be rebuilt lazily with fresh spell list
+
+    -- Profile load changed the saved buff selection; force buff lists to rebuild
+    -- once on the next render so the saved buff appears in the dropdown.
+    e._buff_items     = nil
+    e._sp_buff_items  = nil
+    e._buff_list_v    = nil
+    e._sp_buff_list_v = nil
 end
 
 function spell_config.is_virtual(spell_id)
