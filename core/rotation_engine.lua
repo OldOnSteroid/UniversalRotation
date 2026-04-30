@@ -74,14 +74,43 @@ local function _get_resource_pct()
     return (cur / max_r) * 100.0
 end
 
--- Secondary resource raw count: Rogue combo points and Warlock's 2nd resource
--- both come through get_rogue_combo_points(). Returns nil if API unavailable.
+-- Secondary resource raw count. Prefers get_secondary_resource_current; falls back to
+-- get_rogue_combo_points for older classes. Returns nil if no API is available.
 local function _get_secondary_count()
     local lp = get_local_player()
-    if not lp or type(lp.get_rogue_combo_points) ~= 'function' then return nil end
-    local ok, v = pcall(lp.get_rogue_combo_points, lp)
-    if not ok or type(v) ~= 'number' then return nil end
-    return v
+    if not lp then return nil end
+    if type(lp.get_secondary_resource_current) == 'function' then
+        local ok, v = pcall(lp.get_secondary_resource_current, lp)
+        if ok and type(v) == 'number' then return v end
+    end
+    if type(lp.get_rogue_combo_points) == 'function' then
+        local ok, v = pcall(lp.get_rogue_combo_points, lp)
+        if ok and type(v) == 'number' then return v end
+    end
+    return nil
+end
+
+-- Secondary resource as a percentage (0-100). Uses get_secondary_resource_ratio when
+-- available; otherwise derives from current/max. Returns nil if unavailable.
+local function _get_secondary_pct()
+    local lp = get_local_player()
+    if not lp then return nil end
+    if type(lp.get_secondary_resource_ratio) == 'function' then
+        local ok, v = pcall(lp.get_secondary_resource_ratio, lp)
+        if ok and type(v) == 'number' and v >= 0 then return v * 100.0 end
+    end
+    -- Fallback: derive from current / max
+    local cur, max_r
+    if type(lp.get_secondary_resource_current) == 'function' then
+        local ok, v = pcall(lp.get_secondary_resource_current, lp)
+        if ok and type(v) == 'number' then cur = v end
+    end
+    if type(lp.get_secondary_resource_max) == 'function' then
+        local ok, v = pcall(lp.get_secondary_resource_max, lp)
+        if ok and type(v) == 'number' and v > 0 then max_r = v end
+    end
+    if cur and max_r then return (cur / max_r) * 100.0 end
+    return nil
 end
 
 local function _check_resource_condition(cfg)
@@ -95,10 +124,16 @@ local function _check_resource_condition(cfg)
     if rtype == 1 then
         local count = _get_secondary_count()
         if count == nil then return true end  -- API unavailable, skip gracefully
-        if mode == 0 then
-            return count < threshold
-        else
-            return count >= threshold
+        if mode == 0 then return count < threshold
+        else            return count >= threshold
+        end
+    end
+
+    if rtype == 2 then
+        local pct2 = _get_secondary_pct()
+        if pct2 == nil then return true end
+        if mode == 0 then return pct2 < threshold
+        else            return pct2 >= threshold
         end
     end
 

@@ -386,19 +386,24 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
         e.resource_override:render('Override (assume full)', 'Bypass the resource check entirely — always treats the resource as if it is full/maxed. Use when the resource API is broken or unavailable for your class.')
         if not e.resource_override:get() then
         e.resource_type:render('Resource',
-            { 'Primary % (mana / fury / spirit)', 'Secondary count (Rogue combo / Warlock 2nd)' },
-            'Primary uses get_primary_resource_current/max as a percentage. Secondary uses get_rogue_combo_points as a raw count (Rogue combo points and Warlock 2nd resource share that getter).')
+            { 'Primary % (mana / fury / spirit)', 'Secondary count (raw)', 'Secondary % (ratio)' },
+            'Primary uses get_primary_resource_current/max. Secondary count uses get_secondary_resource_current (falls back to get_rogue_combo_points). Secondary % uses get_secondary_resource_ratio.')
         local rtype = e.resource_type:get() or 0
         if rtype == 0 then
             e.resource_mode:render('Mode', RESOURCE_MODE_LABELS,
                 'Below %: cast when resource is low. Above %: cast when resource is high (e.g. spenders)')
             e.resource_pct:render('Threshold %',
                 'Percentage of max resource (1-100). Skipped gracefully if API returns 0.')
-        else
+        elseif rtype == 1 then
             e.resource_mode:render('Mode', { 'Below count', 'At or above count' },
                 'Below: cast when count is under the threshold. At/above: cast when count has reached the threshold (e.g. spenders).')
             e.resource_pct:render('Threshold (count)',
-                'Raw secondary-resource count. For Warlock 2nd / Rogue combo points, set the cutoff here (e.g. 3).')
+                'Raw secondary-resource count (e.g. Warlock essence, Rogue combo points). Set the cutoff here.')
+        else
+            e.resource_mode:render('Mode', RESOURCE_MODE_LABELS,
+                'Below %: cast when secondary resource is low. Above %: cast when secondary resource is high.')
+            e.resource_pct:render('Threshold %',
+                'Percentage of max secondary resource (1-100). Uses get_secondary_resource_ratio.')
         end
         end  -- end if not resource_override
     end
