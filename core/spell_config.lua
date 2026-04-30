@@ -143,10 +143,11 @@ local function get_elements(spell_id)
         chain_duration  = slider_float:new(0.5, 10.0, 3.0, get_hash(key(spell_id, 'chain_duration'))),
 
         -- Resource condition
-        use_resource    = checkbox:new(false, get_hash(key(spell_id, 'use_resource'))),
-        resource_type   = combo_box:new(0, get_hash(key(spell_id, 'resource_type'))),  -- 0=Primary %, 1=Secondary count (combo points / Warlock 2nd resource)
-        resource_mode   = combo_box:new(1, get_hash(key(spell_id, 'resource_mode'))),  -- default: Above %
-        resource_pct    = slider_int:new(1, 100, 50, get_hash(key(spell_id, 'resource_pct'))),
+        use_resource      = checkbox:new(false, get_hash(key(spell_id, 'use_resource'))),
+        resource_override = checkbox:new(false, get_hash(key(spell_id, 'resource_override'))),  -- bypasses all resource checks (assume full)
+        resource_type     = combo_box:new(0, get_hash(key(spell_id, 'resource_type'))),  -- 0=Primary %, 1=Secondary count (combo points / Warlock 2nd resource)
+        resource_mode     = combo_box:new(1, get_hash(key(spell_id, 'resource_mode'))),  -- default: Above %
+        resource_pct      = slider_int:new(1, 100, 50, get_hash(key(spell_id, 'resource_pct'))),
 
         -- Health condition
         use_health      = checkbox:new(false, get_hash(key(spell_id, 'use_health'))),
@@ -382,6 +383,8 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
     -- ---- Resource Condition ----
     e.use_resource:render('Resource Condition', 'Only cast when a resource meets a threshold')
     if e.use_resource:get() then
+        e.resource_override:render('Override (assume full)', 'Bypass the resource check entirely — always treats the resource as if it is full/maxed. Use when the resource API is broken or unavailable for your class.')
+        if not e.resource_override:get() then
         e.resource_type:render('Resource',
             { 'Primary % (mana / fury / spirit)', 'Secondary count (Rogue combo / Warlock 2nd)' },
             'Primary uses get_primary_resource_current/max as a percentage. Secondary uses get_rogue_combo_points as a raw count (Rogue combo points and Warlock 2nd resource share that getter).')
@@ -397,6 +400,7 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
             e.resource_pct:render('Threshold (count)',
                 'Raw secondary-resource count. For Warlock 2nd / Rogue combo points, set the cutoff here (e.g. 3).')
         end
+        end  -- end if not resource_override
     end
 
     -- ---- Health Condition ----
@@ -522,10 +526,11 @@ function spell_config.get(spell_id)
         buff_mode       = e.buff_mode:get(),     -- 0=Active, 1=Missing
         buff_stacks     = e.buff_stacks:get(),
 
-        use_resource    = e.use_resource:get(),
-        resource_type   = e.resource_type:get(),   -- 0=Primary %, 1=Secondary count
-        resource_mode   = e.resource_mode:get(),   -- 0=Below, 1=Above
-        resource_pct    = e.resource_pct:get(),
+        use_resource      = e.use_resource:get(),
+        resource_override = e.resource_override:get(),
+        resource_type     = e.resource_type:get(),   -- 0=Primary %, 1=Secondary count
+        resource_mode     = e.resource_mode:get(),   -- 0=Below, 1=Above
+        resource_pct      = e.resource_pct:get(),
 
         use_health      = e.use_health:get(),
         health_mode     = e.health_mode:get(),     -- 0=Below, 1=Above
@@ -588,10 +593,11 @@ function spell_config.apply(spell_id, cfg)
     _set_element(e.buff_mode,     cfg.buff_mode)
     _set_element(e.buff_stacks,   cfg.buff_stacks)
 
-    _set_element(e.use_resource,  cfg.use_resource)
-    _set_element(e.resource_type, cfg.resource_type)
-    _set_element(e.resource_mode, cfg.resource_mode)
-    _set_element(e.resource_pct,  cfg.resource_pct)
+    _set_element(e.use_resource,      cfg.use_resource)
+    _set_element(e.resource_override, cfg.resource_override)
+    _set_element(e.resource_type,     cfg.resource_type)
+    _set_element(e.resource_mode,     cfg.resource_mode)
+    _set_element(e.resource_pct,      cfg.resource_pct)
 
     _set_element(e.use_health,    cfg.use_health)
     _set_element(e.health_mode,   cfg.health_mode)

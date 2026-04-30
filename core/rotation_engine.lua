@@ -86,6 +86,7 @@ end
 
 local function _check_resource_condition(cfg)
     if not cfg.use_resource then return true end
+    if cfg.resource_override then return true end  -- bypass: assume resource is full
 
     local rtype = tonumber(cfg.resource_type) or 0   -- 0=Primary %, 1=Secondary count
     local threshold = tonumber(cfg.resource_pct) or 50
