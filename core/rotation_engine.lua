@@ -52,7 +52,7 @@ local function _player_has_buff(required_hash, min_stacks)
     return false
 end
 
--- Returns current resource as a percentage (0-100), or nil if unavailable / unreliable
+-- Returns current primary resource as a percentage (0-100), or nil if unavailable / unreliable
 local function _get_resource_pct()
     local lp = get_local_player()
     if not lp then return nil end
@@ -74,20 +74,39 @@ local function _get_resource_pct()
     return (cur / max_r) * 100.0
 end
 
+-- Secondary resource raw count: Rogue combo points and Warlock's 2nd resource
+-- both come through get_rogue_combo_points(). Returns nil if API unavailable.
+local function _get_secondary_count()
+    local lp = get_local_player()
+    if not lp or type(lp.get_rogue_combo_points) ~= 'function' then return nil end
+    local ok, v = pcall(lp.get_rogue_combo_points, lp)
+    if not ok or type(v) ~= 'number' then return nil end
+    return v
+end
+
 local function _check_resource_condition(cfg)
     if not cfg.use_resource then return true end
+
+    local rtype = tonumber(cfg.resource_type) or 0   -- 0=Primary %, 1=Secondary count
+    local threshold = tonumber(cfg.resource_pct) or 50
+    local mode = tonumber(cfg.resource_mode) or 1    -- 0=Below, 1=Above
+
+    if rtype == 1 then
+        local count = _get_secondary_count()
+        if count == nil then return true end  -- API unavailable, skip gracefully
+        if mode == 0 then
+            return count < threshold
+        else
+            return count >= threshold
+        end
+    end
 
     local pct = _get_resource_pct()
     if pct == nil then return true end  -- API returned 0 / unreliable, skip check gracefully
 
-    local threshold = tonumber(cfg.resource_pct) or 50
-    local mode = tonumber(cfg.resource_mode) or 1  -- 0=Below, 1=Above
-
     if mode == 0 then
-        -- Below %: cast when pct < threshold
         return pct < threshold
     else
-        -- Above %: cast when pct >= threshold
         return pct >= threshold
     end
 end

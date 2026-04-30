@@ -144,6 +144,7 @@ local function get_elements(spell_id)
 
         -- Resource condition
         use_resource    = checkbox:new(false, get_hash(key(spell_id, 'use_resource'))),
+        resource_type   = combo_box:new(0, get_hash(key(spell_id, 'resource_type'))),  -- 0=Primary %, 1=Secondary count (combo points / Warlock 2nd resource)
         resource_mode   = combo_box:new(1, get_hash(key(spell_id, 'resource_mode'))),  -- default: Above %
         resource_pct    = slider_int:new(1, 100, 50, get_hash(key(spell_id, 'resource_pct'))),
 
@@ -379,10 +380,23 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
     end
 
     -- ---- Resource Condition ----
-    e.use_resource:render('Resource Condition', 'Only cast when your primary resource (mana, fury, etc.) meets a threshold')
+    e.use_resource:render('Resource Condition', 'Only cast when a resource meets a threshold')
     if e.use_resource:get() then
-        e.resource_mode:render('Mode', RESOURCE_MODE_LABELS, 'Below %: cast when resource is low. Above %: cast when resource is high (e.g. spenders)')
-        e.resource_pct:render('Threshold %', 'Percentage of max resource (1-100). Skipped gracefully if API returns 0 (e.g. Rogue energy)')
+        e.resource_type:render('Resource',
+            { 'Primary % (mana / fury / spirit)', 'Secondary count (Rogue combo / Warlock 2nd)' },
+            'Primary uses get_primary_resource_current/max as a percentage. Secondary uses get_rogue_combo_points as a raw count (Rogue combo points and Warlock 2nd resource share that getter).')
+        local rtype = e.resource_type:get() or 0
+        if rtype == 0 then
+            e.resource_mode:render('Mode', RESOURCE_MODE_LABELS,
+                'Below %: cast when resource is low. Above %: cast when resource is high (e.g. spenders)')
+            e.resource_pct:render('Threshold %',
+                'Percentage of max resource (1-100). Skipped gracefully if API returns 0.')
+        else
+            e.resource_mode:render('Mode', { 'Below count', 'At or above count' },
+                'Below: cast when count is under the threshold. At/above: cast when count has reached the threshold (e.g. spenders).')
+            e.resource_pct:render('Threshold (count)',
+                'Raw secondary-resource count. For Warlock 2nd / Rogue combo points, set the cutoff here (e.g. 3).')
+        end
     end
 
     -- ---- Health Condition ----
@@ -509,6 +523,7 @@ function spell_config.get(spell_id)
         buff_stacks     = e.buff_stacks:get(),
 
         use_resource    = e.use_resource:get(),
+        resource_type   = e.resource_type:get(),   -- 0=Primary %, 1=Secondary count
         resource_mode   = e.resource_mode:get(),   -- 0=Below, 1=Above
         resource_pct    = e.resource_pct:get(),
 
@@ -574,6 +589,7 @@ function spell_config.apply(spell_id, cfg)
     _set_element(e.buff_stacks,   cfg.buff_stacks)
 
     _set_element(e.use_resource,  cfg.use_resource)
+    _set_element(e.resource_type, cfg.resource_type)
     _set_element(e.resource_mode, cfg.resource_mode)
     _set_element(e.resource_pct,  cfg.resource_pct)
 

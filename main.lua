@@ -650,7 +650,9 @@ local function render_overlay()
         local res_txt = ''
         if cfg.use_resource then
             local sym = (cfg.resource_mode == 0) and '<' or '>='
-            res_txt = string.format(' res%s%d%%', sym, cfg.resource_pct or 50)
+            local unit = ((cfg.resource_type or 0) == 1) and '' or '%'
+            local prefix = ((cfg.resource_type or 0) == 1) and 'cp' or 'res'
+            res_txt = string.format(' %s%s%d%s', prefix, sym, cfg.resource_pct or 50, unit)
         end
 
         local label = string.format('[%d] %s%s%s%s',
