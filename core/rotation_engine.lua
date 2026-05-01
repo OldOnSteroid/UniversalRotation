@@ -730,7 +730,51 @@ function rotation_engine.tick(equipped_ids, settings)
         -- Normal targeted cast
         do
             local spell_range = cfg.range or range
-            local target = target_selector.pick_target(targets, cfg, player_pos, spell_range)
+
+            -- Cross-plugin TARGET HINT: if WarMachine has set a kill
+            -- target via _G.WARMACHINE_TARGET, prefer it over our own
+            -- target_selector pick.  This keeps cast-target alignment
+            -- with WarMachine's walk target -- when WarMachine is
+            -- engaging a 30y Soulspire / BSK structure / elite, we cast
+            -- at THAT instead of the closest white mob, and orbwalker's
+            -- cursor stays on the structure rather than yanking us back
+            -- toward chaff.  Validation: must be alive, targetable, and
+            -- within the spell's range; otherwise fall back to UR's own
+            -- pick.
+            local target = nil
+            local hint = _G.WARMACHINE_TARGET
+            if hint then
+                local valid = true
+                if hint.is_dead then
+                    local ok, dead = pcall(function () return hint:is_dead() end)
+                    if ok and dead then valid = false end
+                end
+                if valid and hint.is_untargetable then
+                    local ok, ut = pcall(function () return hint:is_untargetable() end)
+                    if ok and ut then valid = false end
+                end
+                if valid and hint.is_immune then
+                    local ok, im = pcall(function () return hint:is_immune() end)
+                    if ok and im then valid = false end
+                end
+                if valid and spell_range and player_pos and hint.get_position then
+                    local ok, hp = pcall(function () return hint:get_position() end)
+                    if ok and hp then
+                        local d2 = target_selector.dist2(hp, player_pos)
+                        if d2 > (spell_range * spell_range) then valid = false end
+                    else
+                        valid = false
+                    end
+                end
+                if valid then
+                    target = hint
+                    logger.log('  using WARMACHINE_TARGET hint')
+                end
+            end
+
+            if not target then
+                target = target_selector.pick_target(targets, cfg, player_pos, spell_range)
+            end
 
             if not target then
                 logger.log('  SKIP: no valid target in range')
