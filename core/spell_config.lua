@@ -163,6 +163,9 @@ local function get_elements(spell_id)
         stack_pri_reset      = slider_float:new(0.5, 15.0, 4.0, get_hash(key(spell_id, 'stack_pri_reset'))),
         stack_pri_targeted   = checkbox:new(false, get_hash(key(spell_id, 'stack_pri_targeted'))),
 
+        -- Channeled: when active, rotation holds off so it doesn't interrupt the cast
+        is_channeled    = checkbox:new(false, get_hash(key(spell_id, 'is_channeled'))),
+
         -- Cast method: 0=Normal, 1=Key Press, 2=Force Stand Still + Key
         cast_method     = combo_box:new(default_cast_method, get_hash(key(spell_id, 'cast_method'))),
         evade_key       = combo_box:new(0, get_hash(key(spell_id, 'evade_key'))),  -- index into KEY_PRESS_CODES; default 0 = Space
@@ -276,6 +279,7 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
 
     -- Self Cast
     e.self_cast:render('Self Cast', 'Cast on yourself — no target required (useful for buffs, movement, and AoE centered on player)')
+    e.is_channeled:render('Channeled Spell', 'When this spell is actively channeling, the rotation holds off and lets it run. When the channel ends it re-casts automatically. Use for Incinerate, Flurry, and any hold-to-cast skill.')
 
     local is_self = e.self_cast:get()
 
@@ -590,6 +594,7 @@ function spell_config.get(spell_id)
         stack_pri_reset      = e.stack_pri_reset:get(),
         stack_pri_targeted   = e.stack_pri_targeted:get(),
 
+        is_channeled    = e.is_channeled:get(),
         cast_method     = e.cast_method:get(),       -- 0=Normal, 1=Key Press, 2=Force Stand Still + Key
         evade_key       = KEY_PRESS_CODES[(e.evade_key:get() or 0) + 1] or 0x20,   -- actual VK code
         evade_aim_mode  = e.evade_aim_mode:get(),     -- 0=no aim, 1=towards enemy, 2=orbwalker direction
@@ -661,6 +666,7 @@ function spell_config.apply(spell_id, cfg)
         e.stack_pri_buff_combo = nil
     end
 
+    _set_element(e.is_channeled,   cfg.is_channeled)
     _set_element(e.cast_method,    cfg.cast_method)
     _set_element(e.evade_aim_mode, cfg.evade_aim_mode)
     _set_element(e.skill_slot,     cfg.skill_slot)

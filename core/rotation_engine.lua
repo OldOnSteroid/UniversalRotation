@@ -15,6 +15,17 @@ local _move_until    = 0.0
 -- After a spell with use_chain fires, the target spell's effective priority is temporarily lowered
 local _chain_boosts = {}   -- keyed by target spell_id (number)
 
+-- Channeled spells: [spell_id] = vk_code currently held down
+local _channeled_held = {}
+
+local function _release_all_channeled()
+    for spell_id, vk in pairs(_channeled_held) do
+        pcall(function() utility.send_key_up(vk) end)
+        logger.log('channeled: KEY UP (release) spell=' .. tostring(spell_id))
+    end
+    _channeled_held = {}
+end
+
 local function _player_has_buff(required_hash, min_stacks)
     if not required_hash or required_hash == 0 then return true end
     min_stacks = min_stacks or 1
@@ -282,6 +293,41 @@ local function _record_stack_pri_cast(spell_id, cfg)
     sc.last_cast = get_time_since_inject()
 end
 
+local function _channeled_conditions_met(entry, targets, player_pos, settings)
+    local cfg = entry.cfg
+    local spell_id = entry.spell_id
+
+    if not cfg.self_cast then
+        if not targets.is_valid or (targets.enemy_count or 0) <= 0 then return false end
+        if cfg.boss_only  and not targets.has_boss  then return false end
+        if cfg.elite_only and not targets.has_elite and not targets.has_boss and not targets.has_champion then return false end
+    end
+
+    local ok1 = pcall(function()
+        if not utility.is_spell_ready(spell_id)     then error('not ready') end
+        if not utility.is_spell_affordable(spell_id) then error('not affordable') end
+    end)
+    if not ok1 then return false end
+
+    if not _check_resource_condition(cfg) then return false end
+    if not _check_health_condition(cfg)   then return false end
+
+    if cfg.require_buff then
+        local buff_mode = cfg.buff_mode or 0
+        local has = _player_has_buff(cfg.buff_hash, cfg.buff_stacks)
+        if buff_mode == 0 and not has then return false end
+        if buff_mode == 1 and     has then return false end
+    end
+
+    local effective_min = math.max(cfg.min_enemies or 0, settings.global_min_enemies or 0)
+    if effective_min > 0 and not (targets.has_boss or targets.has_champion) then
+        local nearby = target_selector.count_near(targets, player_pos, cfg.aoe_range or 6.0)
+        if nearby < effective_min then return false end
+    end
+
+    return true
+end
+
 local function can_act()
     local lp = get_local_player()
     if not lp then logger.log('can_act: NO local player'); return false end
@@ -518,20 +564,13 @@ local function try_move_towards(target, player_pos, desired_range)
 end
 
 function rotation_engine.tick(equipped_ids, settings)
-    if not can_act() then return false end
-    if get_time_since_inject() < _gcd_until then return false end
-
-    -- Respect orbwalker: only act when in clear/pvp mode (or when hold-key bypass is set)
-    if settings and settings.respect_orb then
-        local orb_mode_val = 0
-        pcall(function() orb_mode_val = orbwalker.get_orb_mode() end)
-        -- 1=none, 2=pvp, 3=clear, 4=flee. Idle ('none') yields control to user.
-        if orb_mode_val == 1 or orb_mode_val == 0 then
-            logger.log('tick: orbwalker idle (mode=' .. tostring(orb_mode_val) .. '), yielding')
-            return false
-        end
+    if not can_act() then
+        _release_all_channeled()
+        return false
     end
 
+    -- Compute targets early so the channeled pass (which runs every frame,
+    -- GCD-independent) has the data it needs.
     local lp         = get_local_player()
     local player_pos = lp:get_position()
     local range      = settings.scan_range or _scan_range
@@ -573,7 +612,39 @@ function rotation_engine.tick(equipped_ids, settings)
         return a.eff_pri < b.eff_pri
     end)
 
+    -- Channeled spell pass: runs every frame regardless of GCD.
+    -- Holds/releases the configured key based on conditions; other spells are unaffected.
     for _, entry in ipairs(spell_list) do
+        if not entry.is_virtual and entry.cfg.is_channeled then
+            local vk       = entry.cfg.evade_key or 0x20
+            local held     = _channeled_held[entry.spell_id] ~= nil
+            local cond_met = _channeled_conditions_met(entry, targets, player_pos, settings)
+            if cond_met and not held then
+                pcall(function() utility.send_key_down(vk) end)
+                _channeled_held[entry.spell_id] = vk
+                logger.log('channeled: KEY DOWN spell=' .. tostring(entry.spell_id))
+            elseif not cond_met and held then
+                pcall(function() utility.send_key_up(vk) end)
+                _channeled_held[entry.spell_id] = nil
+                logger.log('channeled: KEY UP spell=' .. tostring(entry.spell_id))
+            end
+        end
+    end
+
+    -- GCD and orbwalker guard only the normal (non-channeled) cast loop below
+    if get_time_since_inject() < _gcd_until then return false end
+
+    if settings and settings.respect_orb then
+        local orb_mode_val = 0
+        pcall(function() orb_mode_val = orbwalker.get_orb_mode() end)
+        if orb_mode_val == 1 or orb_mode_val == 0 then
+            logger.log('tick: orbwalker idle (mode=' .. tostring(orb_mode_val) .. '), yielding')
+            return false
+        end
+    end
+
+    for _, entry in ipairs(spell_list) do
+        if entry.cfg.is_channeled then goto next_spell end  -- handled above
         local spell_id = entry.spell_id
         local cfg      = entry.cfg
 
@@ -822,10 +893,15 @@ function rotation_engine.set_scan_range(r)
 end
 
 function rotation_engine.reset()
+    _release_all_channeled()
     _gcd_until        = 0.0
     _move_until       = 0.0
     _chain_boosts     = {}
     _stack_pri_counts = {}
+end
+
+function rotation_engine.release_channeled()
+    _release_all_channeled()
 end
 
 return rotation_engine
