@@ -472,6 +472,14 @@ local function handle_profile_io()
         _import_profile(nil, _active_profile, false)
         gui.elements.import_profile:set(false)
     end
+    if gui.elements.reload_json and gui.elements.reload_json:get() then
+        local ok = _import_profile(nil, _active_profile, false)
+        if ok then
+            spell_config.invalidate_buff_lists()
+            console.print('[UniversalRotation] JSON reloaded: ' .. _active_profile)
+        end
+        gui.elements.reload_json:set(false)
+    end
 
     -- New profile button
     if gui.elements.new_profile and gui.elements.new_profile:get() then

@@ -66,8 +66,9 @@ gui.elements = {
     overlay_y       = si(0, 3000, 20, 'overlay_y'),
     overlay_show_buffs = cb(false, 'overlay_show_buffs'),
 
-    export_profile = cb(false, 'export_profile'),
-    import_profile = cb(false, 'import_profile'),
+    export_profile  = cb(false, 'export_profile'),
+    import_profile  = cb(false, 'import_profile'),
+    reload_json     = cb(false, 'reload_json'),
 
     -- Multi-profile controls
     profile_combo   = combo_box:new(0, get_hash(plugin_label .. '_profile_combo')),
@@ -114,6 +115,8 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
             gui.elements.delete_profile:render('Delete Current Profile', 'Permanently delete the active profile and switch to another')
         end
     end
+
+    gui.elements.reload_json:render('Reload JSON from disk', 'Re-read the active profile\'s JSON file and apply it now. Use this after a friend shares a profile file — no Lua reload needed.')
 
     if gui.elements.global_tree:push('Global Settings') then
         gui.elements.scan_range:render('Scan Range (yds)', 'How far to scan for enemies', 1)
