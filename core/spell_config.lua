@@ -352,7 +352,29 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
             end
         end
 
-        e.buff_combo:render('Buff', items, 'Buff must be active on you to cast. Previously seen buffs are retained even when inactive.')
+        -- Clamp the widget's idx into [0, #items-1] BEFORE render.  The
+        -- combo-box widget persists its selection across reloads via
+        -- get_hash() -- if the items list has shrunk since the saved
+        -- idx (class change wiped buff history, profile imported with
+        -- a buff hash that's not in history yet, etc.) the widget
+        -- could otherwise hand the host an out-of-range idx and crash
+        -- the game on the C-side render.  Always rendered through pcall
+        -- as belt-and-suspenders; if the host's combo-box code does
+        -- crash, we recover gracefully by forcing idx=0 on the next
+        -- frame.
+        local cur = e.buff_combo:get()
+        if type(cur) == 'number' and cur >= #items then
+            if type(e.buff_combo.set) == 'function' then
+                pcall(e.buff_combo.set, e.buff_combo, 0)
+            end
+        end
+        local rok = pcall(function ()
+            e.buff_combo:render('Buff', items,
+                'Buff must be active on you to cast. Previously seen buffs are retained even when inactive.')
+        end)
+        if not rok and type(e.buff_combo.set) == 'function' then
+            pcall(e.buff_combo.set, e.buff_combo, 0)
+        end
 
         local sel = e.buff_combo:get()
         if type(sel) ~= 'number' then sel = 0 end
@@ -449,7 +471,20 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
                 sps.last_list_sig = sig
             end
 
-            e.stack_pri_buff_combo:render('Buff to Monitor', items, 'Select the buff whose stacks determine the build phase')
+            -- Clamp + pcall, same defensive pattern as buff_combo above.
+            local sp_cur = e.stack_pri_buff_combo:get()
+            if type(sp_cur) == 'number' and sp_cur >= #items then
+                if type(e.stack_pri_buff_combo.set) == 'function' then
+                    pcall(e.stack_pri_buff_combo.set, e.stack_pri_buff_combo, 0)
+                end
+            end
+            local sp_rok = pcall(function ()
+                e.stack_pri_buff_combo:render('Buff to Monitor', items,
+                    'Select the buff whose stacks determine the build phase')
+            end)
+            if not sp_rok and type(e.stack_pri_buff_combo.set) == 'function' then
+                pcall(e.stack_pri_buff_combo.set, e.stack_pri_buff_combo, 0)
+            end
 
             local sel = e.stack_pri_buff_combo:get()
             if type(sel) ~= 'number' then sel = 0 end

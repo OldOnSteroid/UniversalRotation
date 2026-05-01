@@ -22,8 +22,10 @@ local function _player_has_buff(required_hash, min_stacks)
     local player = get_local_player()
     if not player or type(player.get_buffs) ~= 'function' then return false end
 
-    local buffs = player:get_buffs()
-    if type(buffs) ~= 'table' then return false end
+    -- pcall so a buff disappearing mid-call (or any host-side fault in
+    -- get_buffs) can't take down the whole rotation tick.
+    local ok, buffs = pcall(player.get_buffs, player)
+    if not ok or type(buffs) ~= 'table' then return false end
 
     for _, b in ipairs(buffs) do
         if b then
@@ -198,8 +200,9 @@ local function _get_buff_stacks(buff_hash)
     if not buff_hash or buff_hash == 0 then return 0 end
     local player = get_local_player()
     if not player or type(player.get_buffs) ~= 'function' then return 0 end
-    local buffs = player:get_buffs()
-    if type(buffs) ~= 'table' then return 0 end
+    -- pcall so a buff disappearing mid-call can't crash the tick.
+    local ok, buffs = pcall(player.get_buffs, player)
+    if not ok or type(buffs) ~= 'table' then return 0 end
     for _, b in ipairs(buffs) do
         if b then
             local h = nil
@@ -579,6 +582,18 @@ function rotation_engine.tick(equipped_ids, settings)
         local spell_name = is_virtual and 'Evade' or (entry.name or tostring(spell_id))
         logger.log(string.format('eval: %s (id=%s pri=%d eff=%d method=%d)',
             spell_name, tostring(spell_id), cfg.priority, entry.eff_pri, cfg.cast_method or 0))
+
+        -- Cross-plugin TRAVEL MODE: when WarMachine signals it's in a
+        -- movement / interaction phase (no enemy in melee range), only
+        -- self-cast spells fire.  Defensives, buffs, and player-AoE
+        -- continue to cycle; offensive targeted spells are suppressed
+        -- so we don't blow CDs and resources on stragglers we're walking
+        -- past.  Contract is a single global; see WarMachine/core/
+        -- rotation_bridge.lua.  No-op when WarMachine isn't loaded.
+        if _G.WARMACHINE_TRAVEL_MODE and not cfg.self_cast then
+            logger.log('  SKIP: WARMACHINE_TRAVEL_MODE + non-self-cast')
+            goto next_spell
+        end
 
         -- Self-cast and cursor-targeted spells don't need enemies present
         if not cfg.self_cast and (cfg.target_mode or 0) ~= 5 then

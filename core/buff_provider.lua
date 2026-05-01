@@ -31,6 +31,17 @@ local _choices_cache       = nil  -- { items, hashes, index_by_hash, filter_sig 
 local _choices_cache_until = 0
 local _CHOICES_TTL         = 1.0  -- seconds
 
+-- Monotonic version counter -- bumps whenever the buff history changes
+-- in a way that consumers (spell_config) need to invalidate their
+-- cached dropdown items.  Clear-history bumps it; observing a never-
+-- before-seen hash bumps it.  Consumers cache `last_seen_version`
+-- and rebuild their items list when it diverges.
+local _history_version = 0
+local function _bump_version()
+    _history_version = _history_version + 1
+    _choices_cache = nil  -- always invalidate our own choices cache too
+end
+
 local function safe_call(fn, ...)
     local ok, v = pcall(fn, ...)
     if not ok then return nil end
@@ -337,7 +348,7 @@ function buff_provider.observe_player_buffs()
     _active_set = new_active
 
     if added then
-        _choices_cache = nil  -- new buff in history -> invalidate dropdown cache
+        _bump_version()  -- new buff in history -> invalidate caches everywhere
     end
     return added
 end
@@ -362,11 +373,22 @@ function buff_provider.export_history()
     return out
 end
 
--- Clear history (called on class change)
+-- Clear history (called on class change).  Bumps the history version
+-- so consumers (spell_config) drop their cached items list -- otherwise
+-- the GUI would still render with stale hashes that no longer have
+-- entries in history, and the combo-box widget could end up with a
+-- selected idx greater than the current item count (host-side crash
+-- on render).
 function buff_provider.clear_history()
     _buff_history = {}
     _active_set = {}
-    _choices_cache = nil
+    _bump_version()
+end
+
+-- Public version counter for consumers to detect "history changed"
+-- without poking at the cache directly.
+function buff_provider.get_history_version()
+    return _history_version
 end
 
 return buff_provider
