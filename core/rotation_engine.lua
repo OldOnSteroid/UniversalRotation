@@ -319,7 +319,7 @@ local function _world_to_screen(world_pos)
         local s = v:coordinate_to_screen()
         return s.x, s.y
     end)
-    if ok and sx and sy then return sx, sy end
+    if ok and sx and sy then return math.floor(sx), math.floor(sy) end
     return nil
 end
 
@@ -331,7 +331,8 @@ local function _get_aim_target(aim_mode, player_pos, scan_range)
     if aim_mode == 0 then logger.log('_get_aim_target: No Aim, skipping'); return nil end
 
     logger.log(string.format('_get_aim_target: aim_mode=%d scan_range=%s', aim_mode, tostring(scan_range)))
-    local enemy = target_selector.get_target_closer(player_pos, scan_range or 30)
+    local t = target_selector.get_targets(player_pos, scan_range or 30)
+    local enemy = t and t.closest
     if not enemy then logger.log('_get_aim_target: no enemy found'); return nil end
 
     local enemy_pos = nil
