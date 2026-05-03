@@ -293,7 +293,7 @@ local function _record_stack_pri_cast(spell_id, cfg)
     sc.last_cast = get_time_since_inject()
 end
 
-local function _channeled_conditions_met(entry, targets, player_pos, settings)
+local function _channeled_conditions_met(entry, targets, player_pos, settings, held)
     local cfg = entry.cfg
     local spell_id = entry.spell_id
 
@@ -304,7 +304,11 @@ local function _channeled_conditions_met(entry, targets, player_pos, settings)
     end
 
     local ok1 = pcall(function()
-        if not utility.is_spell_ready(spell_id)     then error('not ready') end
+        -- Skip is_spell_ready while already channeling; the spell reports
+        -- "not ready" during its own channel, which would cause stutter.
+        if not held then
+            if not utility.is_spell_ready(spell_id) then error('not ready') end
+        end
         if not utility.is_spell_affordable(spell_id) then error('not affordable') end
     end)
     if not ok1 then return false end
@@ -626,11 +630,39 @@ function rotation_engine.tick(equipped_ids, settings)
         if not entry.is_virtual and entry.cfg.is_channeled then
             local vk       = entry.cfg.evade_key or 0x20
             local held     = _channeled_held[entry.spell_id] ~= nil
-            local cond_met = _channeled_conditions_met(entry, targets, player_pos, settings)
+            local cond_met = _channeled_conditions_met(entry, targets, player_pos, settings, held)
             if cond_met and not held then
+                -- Aim cursor toward enemy before holding key
+                pcall(function()
+                    local aim_mode = entry.cfg.evade_aim_mode or 0
+                    if aim_mode ~= 0 and player_pos then
+                        local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
+                        if aim_pos then
+                            local sx, sy = _world_to_screen(aim_pos)
+                            if sx and sy then
+                                logger.log(string.format('channeled: cursor -> (%d, %d)', sx, sy))
+                                utility.send_mouse_move(sx, sy)
+                            end
+                        end
+                    end
+                end)
                 pcall(function() utility.send_key_down(vk) end)
                 _channeled_held[entry.spell_id] = vk
                 logger.log('channeled: KEY DOWN spell=' .. tostring(entry.spell_id))
+            elseif cond_met and held then
+                -- Continuously re-aim toward enemy while channeling
+                pcall(function()
+                    local aim_mode = entry.cfg.evade_aim_mode or 0
+                    if aim_mode ~= 0 and player_pos then
+                        local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
+                        if aim_pos then
+                            local sx, sy = _world_to_screen(aim_pos)
+                            if sx and sy then
+                                utility.send_mouse_move(sx, sy)
+                            end
+                        end
+                    end
+                end)
             elseif not cond_met and held then
                 pcall(function() utility.send_key_up(vk) end)
                 _channeled_held[entry.spell_id] = nil
@@ -641,6 +673,14 @@ function rotation_engine.tick(equipped_ids, settings)
 
     -- GCD and orbwalker guard only the normal (non-channeled) cast loop below
     if get_time_since_inject() < _gcd_until then return false end
+
+    -- While a channeled spell is actively held, suppress the normal cast loop.
+    -- API casts (try_cast) during a channel can interrupt or conflict with the
+    -- held key, causing stutter and direction loss.
+    if next(_channeled_held) ~= nil then
+        logger.log('tick: channeled spell held, skipping normal loop')
+        return false
+    end
 
     if settings and settings.respect_orb then
         local orb_mode_val = 0
