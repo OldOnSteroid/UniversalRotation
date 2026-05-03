@@ -58,6 +58,15 @@ gui.elements = {
     global_min_enemies = si(0, 15, 0, 'global_min_enemies'),
     allow_movement = cb(false, 'allow_movement'),       -- pathfinder.request_move for melee positioning
     respect_orb    = cb(true,  'respect_orb'),          -- only act when orbwalker is active or hold-key is held
+    -- WarMachine override: when ON, UR's targeting becomes
+    -- AUTHORITATIVE on _G.WARMACHINE_TARGET -- it casts only at
+    -- WarMachine's pick (or holds fire if WarMachine has cleared
+    -- the target).  When OFF (default), the WarMachine target is
+    -- a HINT and UR falls back to its own target_selector when
+    -- the hint is missing/invalid.  Turn ON when running
+    -- WarMachine activities so combat doesn't pull the bot off
+    -- its navigation goal -- WarMachine controls when to fight.
+    warmachine_override = cb(false, 'warmachine_override'),
     debug_mode     = cb(false, 'debug_mode'),
 
 
@@ -124,6 +133,14 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
         gui.elements.global_min_enemies:render('Global Min Enemies', 'Minimum enemies required globally before any spell fires (0 = off). Per-spell min is also respected — whichever is higher wins.', 1)
         gui.elements.respect_orb:render('Respect Orbwalker', 'Only run the rotation while the orbwalker is in clear/pvp mode (or while Hold-to-Cast is held). Recommended ON to avoid fighting your orbwalker.')
         gui.elements.allow_movement:render('Allow Movement', 'Let the rotation move the character into melee range (pathfinder.request_move). Turn OFF if you want the orbwalker to handle ALL movement.')
+        gui.elements.warmachine_override:render('WarMachine Targeting Override',
+            'When ON, UR ONLY casts at the target WarMachine has picked '
+            .. '(_G.WARMACHINE_TARGET).  No fallback to closest-mob '
+            .. 'selection.  Hold fire when WarMachine clears the target. '
+            .. 'Turn ON when running WarMachine activities so combat '
+            .. 'follows WarMachine\'s priority model (pathing > '
+            .. 'objectives > only-fight-when-interfering) instead of '
+            .. 'auto-engaging every mob within scan range.')
         gui.elements.debug_mode:render('Debug Mode', 'Print cast info to console')
 
         gui.elements.overlay_enabled:render('Overlay', 'Show/hide the on-screen overlay')

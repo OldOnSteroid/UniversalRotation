@@ -857,9 +857,19 @@ function rotation_engine.tick(equipped_ids, settings)
             -- engaging a 30y Soulspire / BSK structure / elite, we cast
             -- at THAT instead of the closest white mob, and orbwalker's
             -- cursor stays on the structure rather than yanking us back
-            -- toward chaff.  Validation: must be alive, targetable, and
-            -- within the spell's range; otherwise fall back to UR's own
-            -- pick.
+            -- toward chaff.
+            --
+            -- Two modes:
+            --   * HINT mode (settings.warmachine_override == false):
+            --     hint is preferred; falls back to UR's own picker
+            --     when the hint is nil / dead / out of range.
+            --   * OVERRIDE mode (settings.warmachine_override == true):
+            --     hint is AUTHORITATIVE.  No fallback -- if the hint
+            --     is nil or invalid, this spell SKIPS this tick.
+            --     Used by the WarMachine activity model where combat
+            --     is priority 3 -- the bot only fights when WarMachine
+            --     decides a mob is "interfering," and must hold fire
+            --     during pure-nav phases.
             local target = nil
             local hint = _G.WARMACHINE_TARGET
             if hint then
@@ -892,6 +902,16 @@ function rotation_engine.tick(equipped_ids, settings)
             end
 
             if not target then
+                if settings.warmachine_override then
+                    -- Override mode: NO fallback.  WarMachine has
+                    -- decided the bot should not engage anyone right
+                    -- now (hint nil or invalid), so we hold fire.
+                    -- This is what enforces "kill only when
+                    -- interfering" -- WarMachine clears the target
+                    -- during pure navigation, so UR stays quiet.
+                    logger.log('  SKIP: warmachine_override on, no valid hint')
+                    goto next_spell
+                end
                 target = target_selector.pick_target(targets, cfg, player_pos, spell_range)
             end
 

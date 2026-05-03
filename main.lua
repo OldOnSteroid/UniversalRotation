@@ -100,6 +100,11 @@ local function update_settings()
     settings.overlay_show_buffs = gui.elements.overlay_show_buffs and gui.elements.overlay_show_buffs:get() or false
     settings.allow_movement     = gui.elements.allow_movement and gui.elements.allow_movement:get() or false
     settings.respect_orb        = should_respect_orbwalker()
+    -- See gui.lua's warmachine_override checkbox tooltip.  When ON,
+    -- rotation_engine treats _G.WARMACHINE_TARGET as authoritative --
+    -- no fallback to UR's own target_selector when it's nil/invalid.
+    settings.warmachine_override = gui.elements.warmachine_override
+        and gui.elements.warmachine_override:get() or false
     -- True while the user is actively hold-casting; rotation_engine uses this to
     -- suppress cursor warps and pathfinder moves so manual movement input wins.
     settings.hold_active        = gui.elements.use_hold_key and gui.elements.use_hold_key:get() and _hold_key_active or false
