@@ -359,6 +359,8 @@ end
 
 -- Convert a world vec3 position to screen vec2 coordinates.
 -- D4 world uses x/y as horizontal plane; vec2:coordinate_to_screen() does the projection.
+-- coordinate_to_screen() may expose its result fields as getter functions (like vec3 does),
+-- so we use the same function-vs-field defensive access on both input and output.
 local function _world_to_screen(world_pos)
     if not world_pos then return nil end
     local ok, sx, sy = pcall(function()
@@ -366,9 +368,14 @@ local function _world_to_screen(world_pos)
         local wy = type(world_pos.y) == 'function' and world_pos:y() or world_pos.y
         local v = vec2:new(wx, wy)
         local s = v:coordinate_to_screen()
-        return s.x, s.y
+        if not s then return nil, nil end
+        local rx = type(s.x) == 'function' and s:x() or s.x
+        local ry = type(s.y) == 'function' and s:y() or s.y
+        return rx, ry
     end)
-    if ok and sx and sy then return math.floor(sx), math.floor(sy) end
+    if ok and type(sx) == 'number' and type(sy) == 'number' then
+        return math.floor(sx), math.floor(sy)
+    end
     return nil
 end
 
@@ -449,6 +456,7 @@ local function try_key_cast(spell_id, vk_code, is_virtual, aim_mode, player_pos,
                 return true
             else
                 logger.log('try_key_cast: world_to_screen failed')
+                console.print('[UniversalRota] Evade aim: world_to_screen failed — cursor not moved. Enable Debug Mode for more info.')
             end
         end
     end
