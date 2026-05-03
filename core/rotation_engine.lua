@@ -511,43 +511,50 @@ end
 local function try_cursor_cast(spell_id, anim_delay)
     anim_delay = anim_delay or 0.05
 
-    if not utility.is_spell_ready(spell_id) then return false end
-    if not utility.is_spell_affordable(spell_id) then return false end
+    local ok_r, ready = pcall(utility.is_spell_ready, spell_id)
+    if not ok_r or not ready then return false end
+    local ok_a, affordable = pcall(utility.is_spell_affordable, spell_id)
+    if not ok_a or not affordable then return false end
 
     local cursor_pos = get_cursor_position()
     if not cursor_pos then return false end
 
-    local ok = cast_spell.position(spell_id, cursor_pos, anim_delay)
-    return ok or false
+    local ok, v = pcall(cast_spell.position, spell_id, cursor_pos, anim_delay)
+    return ok and v or false
 end
 
 local function try_cast(spell_id, target, player_pos, anim_delay, self_cast)
     anim_delay = anim_delay or 0.05
 
-    if not utility.is_spell_ready(spell_id) then return false end
-    if not utility.is_spell_affordable(spell_id) then return false end
+    local ok_r, ready = pcall(utility.is_spell_ready, spell_id)
+    if not ok_r or not ready then return false end
+    local ok_a, affordable = pcall(utility.is_spell_affordable, spell_id)
+    if not ok_a or not affordable then return false end
 
     -- Self-cast: cast on player's position, no target needed
     if self_cast then
-        local ok = cast_spell.self(spell_id, anim_delay)
-        if ok then return true end
-        -- Fallback: cast at player's own position
-        ok = cast_spell.position(spell_id, player_pos, anim_delay)
-        return ok or false
+        local ok, v = pcall(cast_spell.self, spell_id, anim_delay)
+        if ok and v then return true end
+        ok, v = pcall(cast_spell.position, spell_id, player_pos, anim_delay)
+        return ok and v or false
     end
 
-    local target_pos = target and target:get_position() or player_pos
+    local target_pos = player_pos
+    if target then
+        local ok_p, tp = pcall(function() return target:get_position() end)
+        if ok_p and tp then target_pos = tp end
+    end
 
-    local ok = cast_spell.position(spell_id, target_pos, anim_delay)
-    if ok then return true end
+    local ok, v = pcall(cast_spell.position, spell_id, target_pos, anim_delay)
+    if ok and v then return true end
 
     if target then
-        ok = cast_spell.target(target, spell_id, anim_delay)
-        if ok then return true end
+        ok, v = pcall(cast_spell.target, target, spell_id, anim_delay)
+        if ok and v then return true end
     end
 
-    ok = cast_spell.self(spell_id, anim_delay)
-    return ok or false
+    ok, v = pcall(cast_spell.self, spell_id, anim_delay)
+    return ok and v or false
 end
 
 
@@ -729,8 +736,19 @@ function rotation_engine.tick(equipped_ids, settings)
 
         -- Virtual spells don't have real spell IDs, skip API checks
         if not is_virtual then
-            if not utility.is_spell_ready(spell_id) then logger.log('  SKIP: spell not ready'); goto next_spell end
-            if not utility.is_spell_affordable(spell_id) then logger.log('  SKIP: spell not affordable'); goto next_spell end
+            local ok_r, is_ready = pcall(utility.is_spell_ready, spell_id)
+            if not ok_r then
+                if settings.debug then console.print(string.format('[UniversalRota] ERROR is_spell_ready(%s): %s', tostring(spell_id), tostring(is_ready))) end
+                logger.log('  SKIP: is_spell_ready threw: ' .. tostring(is_ready)); goto next_spell
+            end
+            if not is_ready then logger.log('  SKIP: spell not ready'); goto next_spell end
+
+            local ok_a, is_affordable = pcall(utility.is_spell_affordable, spell_id)
+            if not ok_a then
+                if settings.debug then console.print(string.format('[UniversalRota] ERROR is_spell_affordable(%s): %s', tostring(spell_id), tostring(is_affordable))) end
+                logger.log('  SKIP: is_spell_affordable threw: ' .. tostring(is_affordable)); goto next_spell
+            end
+            if not is_affordable then logger.log('  SKIP: spell not affordable'); goto next_spell end
         end
 
         -- Resource condition check
@@ -807,9 +825,16 @@ function rotation_engine.tick(equipped_ids, settings)
         -- For self-cast, aim at player position
         if cfg.self_cast then
             logger.log('  path: SELF CAST')
-            local did_cast = dispatch_cast(function()
-                return try_cast(spell_id, nil, player_pos, settings.anim_delay or 0.05, true)
-            end, player_pos)
+            local dc_ok, did_cast = pcall(function()
+                return dispatch_cast(function()
+                    return try_cast(spell_id, nil, player_pos, settings.anim_delay or 0.05, true)
+                end, player_pos)
+            end)
+            if not dc_ok then
+                if settings.debug then console.print(string.format('[UniversalRota] ERROR casting %s (self): %s', spell_name, tostring(did_cast))) end
+                logger.log('  cast error (self): ' .. tostring(did_cast))
+                goto next_spell
+            end
             if did_cast then
                 logger.log(string.format('  CAST SUCCESS: %s (self)', spell_name))
                 spell_tracker.record_cast(spell_id, cfg.charges)
@@ -828,9 +853,16 @@ function rotation_engine.tick(equipped_ids, settings)
         -- Cursor targeting mode (target_mode == 5): cast at cursor position, no enemy needed
         if (cfg.target_mode or 0) == 5 then
             logger.log('  path: CURSOR CAST')
-            local did_cast = dispatch_cast(function()
-                return try_cursor_cast(spell_id, settings.anim_delay or 0.05)
-            end, nil)  -- nil = leave cursor as-is for FSS too
+            local dc_ok, did_cast = pcall(function()
+                return dispatch_cast(function()
+                    return try_cursor_cast(spell_id, settings.anim_delay or 0.05)
+                end, nil)
+            end)
+            if not dc_ok then
+                if settings.debug then console.print(string.format('[UniversalRota] ERROR casting %s (cursor): %s', spell_name, tostring(did_cast))) end
+                logger.log('  cast error (cursor): ' .. tostring(did_cast))
+                goto next_spell
+            end
             if did_cast then
                 logger.log(string.format('  CAST SUCCESS: %s (cursor)', spell_name))
                 spell_tracker.record_cast(spell_id, cfg.charges)
@@ -931,9 +963,15 @@ function rotation_engine.tick(equipped_ids, settings)
             logger.log('  path: TARGETED CAST')
             local target_pos = nil
             pcall(function() target_pos = target:get_position() end)
-            local did_cast = dispatch_cast(function()
-                return try_cast(spell_id, target, player_pos, settings.anim_delay or 0.05, false)
-            end, target_pos)
+            local dc_ok, did_cast = pcall(function()
+                return dispatch_cast(function()
+                    return try_cast(spell_id, target, player_pos, settings.anim_delay or 0.05, false)
+                end, target_pos)
+            end)
+            if not dc_ok then
+                if settings.debug then console.print(string.format('[UniversalRota] ERROR casting %s (targeted): %s', spell_name, tostring(did_cast))) end
+                logger.log('  cast error (targeted): ' .. tostring(did_cast))
+            end
             if did_cast then
                 logger.log(string.format('  CAST SUCCESS: %s (targeted)', spell_name))
                 spell_tracker.record_cast(spell_id, cfg.charges)
