@@ -16,6 +16,7 @@ A dynamic, priority-based spell rotation engine for Diablo IV. Automatically sel
 - **Global & Per-Spell Min Enemies** — Global minimum enemy count that applies to all spells. Per-spell overrides also available. Bosses and Champions always bypass these limits.
 - **Virtual Evade Spell** — A special non-spell entry that presses Spacebar (or any key) on a configurable priority, fully integrated with aim direction and all rotation logic.
 - **Multi-Profile System** — Multiple named profiles per class with dropdown switching, new profile creation, duplication, deletion, and rename. Profiles save all global and per-spell settings.
+- **Cloud Sharing** — Upload your profile to get a short share code, browse community-shared profiles for your class from an in-menu dropdown, or import a friend's profile by pasting their code.
 - **Persistent Buff History** — Previously seen buffs are retained in the profile even when inactive, shown as "(Not Active)" in dropdowns so they don't disappear between sessions.
 - **Town Safety** — Rotation is fully suppressed in safe zones and town areas.
 - **On-Screen Overlay** — Displays equipped spells in priority order, color-coded by status (green = ready, yellow = cooldown, red = unavailable). Shows cast method, target mode, and resource condition tags.
@@ -33,6 +34,7 @@ UniversalRotation/
 │   ├── spell_tracker.lua     # Cooldown & charge tracking
 │   ├── target_selector.lua   # Enemy selection algorithms
 │   ├── buff_provider.lua     # Buff detection, name remapping, history persistence
+│   ├── cloud_share.lua       # Cloud sharing client (HTTP + on-disk listing cache)
 │   └── profile_io.lua        # JSON serialization (pure Lua)
 └── *.json                    # Class profiles (auto-created per class/profile)
 ```
@@ -104,6 +106,39 @@ Each class supports multiple named profiles. Profiles are stored as separate JSO
 - **Rename Profile** — type a new name and click Apply
 - Profiles auto-save on class change and on profile switch
 - All global settings (including overlay options) are saved and restored per profile
+
+## Cloud Sharing
+
+Profiles can be uploaded and downloaded directly from the in-game menu, so you can publish a build for the community or import one a friend sends you without ever touching a JSON file. All controls live under **Profiles → Cloud Sharing**.
+
+### Sharing your profile
+
+1. Open the active profile you want to publish.
+2. Type a public name in the **Display Name** field (or leave it blank to reuse the local profile name).
+3. Click **Share Profile**.
+4. The menu now shows your **share code** (a short string like `FDHTM2`). Pass that code to anyone who wants your build.
+5. Tweak the profile later? The button changes to **Update Cloud Profile** — clicking it re-uploads your latest settings to the same code, so people who already imported can just re-import to get the update.
+
+### Browsing community profiles for your class
+
+The **Cloud Profile** dropdown auto-populates with profiles other players have shared for your current class — you don't have to click anything to fetch the list. The list refreshes automatically:
+
+- on script load,
+- whenever your character class changes,
+- and right after you share or update your own profile.
+
+A detail line under the dropdown shows the full code and last-updated timestamp for whichever entry is highlighted. Click **Import Selected** to download it; the profile is saved as a new local profile and switched to immediately.
+
+### Importing a code from a friend
+
+If a friend posts a code in chat (or shares one for a different class than the one you're playing), paste it into the **Share Code** field and click **Import Profile**. The downloaded profile is saved under the name the original author gave it.
+
+### Offline / server-down behaviour
+
+The dropdown is backed by a per-class on-disk cache (`cloud_listing_<class>.json` in the script folder), so:
+
+- The most recently seen list is rendered immediately on startup, even before any network call returns.
+- If the server is unreachable, the previously cached list stays visible and there is no console spam — you can still browse and import using whatever was cached, and uploads simply fail with a one-line console error.
 
 ## Stack Priority Mode — How It Works
 
