@@ -1,0 +1,211 @@
+local cloud_share = {}
+
+--[[
+  Cloud Sharing Module — io.popen + curl (Windows 10 built-in)
+
+  Expected Server API
+  -------------------
+  POST   /api/profiles
+    Headers: Content-Type: application/json, X-API-Key: <key>
+    Body:    { "class": "sorcerer", "name": "My Build", "data": "<profile json string>" }
+    Returns: { "ok": true, "code": "ABC123", "creator_token": "xxxx" }
+          or { "ok": false, "error": "..." }
+
+  PATCH  /api/profiles/:code
+    Headers: Content-Type: application/json, X-API-Key: <key>
+    Body:    { "data": "<profile json string>", "creator_token": "xxxx" }
+    Returns: { "ok": true }
+          or { "ok": false, "error": "..." }
+
+  GET    /api/profiles?class=sorcerer
+    Headers: X-API-Key: <key>
+    Returns: [ { "code": "ABC123", "name": "My Build", "updated_at": "..." }, ... ]
+
+  GET    /api/profiles/:code
+    Headers: X-API-Key: <key>
+    Returns: { "code": "ABC123", "name": "My Build", "class": "sorcerer", "data": "<json>" }
+          or { "ok": false, "error": "..." }
+]]
+
+-- ── Configuration ────────────────────────────────────────────────────────────
+-- Set BASE_URL to wherever you host the server before releasing to users.
+local BASE_URL = 'http://localhost:3000'
+-- Shared secret embedded in all requests — not real security, just gates access
+-- to users who have the plugin. Must match what your server expects.
+local API_KEY  = 'ur-community-2024'
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local profile_io = require 'core.profile_io'
+
+local _script_root = ''
+local _index_path  = ''
+-- Keyed by "class:profile_name" → { code, creator_token, display_name }
+local _share_index = {}
+
+local function _load_index()
+    if _index_path == '' then return end
+    local text = profile_io.read_file(_index_path)
+    if not text then return end
+    local data = profile_io.from_json(text)
+    if type(data) == 'table' then _share_index = data end
+end
+
+local function _save_index()
+    if _index_path == '' then return end
+    profile_io.write_file(_index_path, profile_io.to_json(_share_index))
+end
+
+function cloud_share.init(script_root)
+    _script_root = tostring(script_root or '')
+    _index_path  = _script_root .. 'cloud_share_index.json'
+    _load_index()
+end
+
+-- ── HTTP helpers (blocking — only call from user-triggered code) ──────────────
+
+local function _run(cmd)
+    local h = io.popen(cmd, 'r')
+    if not h then return nil end
+    local out = h:read('*a')
+    h:close()
+    return out
+end
+
+local _tmp_file = nil
+
+local function _write_tmp(body_json)
+    _tmp_file = _script_root .. '_cloud_tmp.json'
+    return profile_io.write_file(_tmp_file, body_json)
+end
+
+local function _rm_tmp()
+    if _tmp_file then
+        pcall(function() os.remove(_tmp_file) end)
+        _tmp_file = nil
+    end
+end
+
+local function _post(path, body_json)
+    if not _write_tmp(body_json) then return nil end
+    local cmd = string.format(
+        'curl -s -m 15 -X POST "%s%s" -H "Content-Type: application/json" -H "X-API-Key: %s" --data @"%s"',
+        BASE_URL, path, API_KEY, _tmp_file
+    )
+    local out = _run(cmd)
+    _rm_tmp()
+    return out
+end
+
+local function _patch(path, body_json)
+    if not _write_tmp(body_json) then return nil end
+    local cmd = string.format(
+        'curl -s -m 15 -X PATCH "%s%s" -H "Content-Type: application/json" -H "X-API-Key: %s" --data @"%s"',
+        BASE_URL, path, API_KEY, _tmp_file
+    )
+    local out = _run(cmd)
+    _rm_tmp()
+    return out
+end
+
+local function _get(path)
+    local cmd = string.format(
+        'curl -s -m 15 "%s%s" -H "X-API-Key: %s"',
+        BASE_URL, path, API_KEY
+    )
+    return _run(cmd)
+end
+
+-- ── Public API ────────────────────────────────────────────────────────────────
+
+local function _idx_key(class_key, profile_name)
+    return tostring(class_key) .. ':' .. tostring(profile_name)
+end
+
+-- Returns the stored share info for a local profile, or nil if never shared.
+function cloud_share.get_share_info(class_key, profile_name)
+    return _share_index[_idx_key(class_key, profile_name)]
+end
+
+-- Upload (create) or re-upload (update) a profile to the cloud.
+-- profile_data_json : the full profile JSON string to store
+-- display_name      : human-readable name shown on the listing (only used on create)
+-- Returns: { ok=bool, code=string, updated=bool, error=string }
+function cloud_share.share(class_key, profile_name, profile_data_json, display_name)
+    local info = _share_index[_idx_key(class_key, profile_name)]
+
+    if info and info.code and info.creator_token and info.creator_token ~= '' then
+        -- UPDATE existing share
+        local body = profile_io.to_json({
+            data          = profile_data_json,
+            creator_token = info.creator_token,
+        })
+        local resp = _patch('/api/profiles/' .. info.code, body)
+        if not resp or resp == '' then
+            return { ok = false, error = 'No response — is the server running?' }
+        end
+        local result = profile_io.from_json(resp)
+        if type(result) == 'table' and result.ok then
+            return { ok = true, code = info.code, updated = true }
+        end
+        return { ok = false, error = (type(result) == 'table' and result.error) or resp }
+    else
+        -- CREATE new share
+        local body = profile_io.to_json({
+            class = class_key,
+            name  = display_name or profile_name,
+            data  = profile_data_json,
+        })
+        local resp = _post('/api/profiles', body)
+        if not resp or resp == '' then
+            return { ok = false, error = 'No response — is the server running?' }
+        end
+        local result = profile_io.from_json(resp)
+        if type(result) == 'table' and result.ok and result.code then
+            _share_index[_idx_key(class_key, profile_name)] = {
+                code          = result.code,
+                creator_token = result.creator_token or '',
+                display_name  = display_name or profile_name,
+            }
+            _save_index()
+            return { ok = true, code = result.code, updated = false }
+        end
+        return { ok = false, error = (type(result) == 'table' and result.error) or resp }
+    end
+end
+
+-- List profiles available for a class.
+-- Returns: array of { code, name, updated_at }, or nil + error_string
+function cloud_share.list(class_key)
+    local resp = _get('/api/profiles?class=' .. tostring(class_key))
+    if not resp or resp == '' then
+        return nil, 'No response — is the server running?'
+    end
+    local result = profile_io.from_json(resp)
+    if type(result) == 'table' then
+        -- Accept either a bare array or { profiles = [...] }
+        if result[1] ~= nil or (type(result) == 'table' and next(result) == nil) then
+            return result, nil
+        end
+        if type(result.profiles) == 'table' then
+            return result.profiles, nil
+        end
+        if result.error then return nil, result.error end
+    end
+    return nil, 'Unexpected response format'
+end
+
+-- Download a profile by share code.
+-- Returns: { ok=bool, data=json_string, name=string, class=string, error=string }
+function cloud_share.download(code)
+    local resp = _get('/api/profiles/' .. tostring(code))
+    if not resp or resp == '' then
+        return { ok = false, error = 'No response — is the server running?' }
+    end
+    local result = profile_io.from_json(resp)
+    if type(result) == 'table' and result.data then
+        return { ok = true, data = result.data, name = result.name, class = result.class }
+    end
+    return { ok = false, error = (type(result) == 'table' and result.error) or 'Unexpected response' }
+end
+
+return cloud_share

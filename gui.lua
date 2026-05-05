@@ -89,6 +89,13 @@ gui.elements = {
     inactive_tree  = tree_node:new(1),
     evade_tree     = tree_node:new(1),
 
+    -- Cloud sharing
+    cloud_tree        = tree_node:new(1),
+    cloud_share_name  = input_text:new(get_hash(plugin_label .. '_cloud_share_name')),
+    cloud_share_btn   = cb(false, 'cloud_share_btn'),
+    cloud_browse_btn  = cb(false, 'cloud_browse_btn'),
+    cloud_import_code = input_text:new(get_hash(plugin_label .. '_cloud_import_code')),
+
     -- Buff filter checkboxes (controls which categories appear in buff dropdowns)
     buff_filter_tree    = tree_node:new(2),
     bf_paragon          = cb(false, 'bf_paragon'),
@@ -101,7 +108,7 @@ gui.elements = {
     bf_internal         = cb(false, 'bf_internal'),
 }
 
-gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, active_profile)
+gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, active_profile, cloud_info)
     if not gui.elements.main_tree:push('Magoogles Universal Rotation | v' .. plugin_version) then return end
 
     gui.elements.enabled:render('Enable', 'Enable the universal rotation')
@@ -152,6 +159,46 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
 
         gui.elements.export_profile:render('Export class profile', 'Write current settings to a JSON file for sharing')
         gui.elements.import_profile:render('Import class profile', 'Load settings from the class JSON file (overwrites current)')
+
+        -- Cloud sharing
+        if gui.elements.cloud_tree:push('Cloud Sharing') then
+            render_menu_header('Share your rotation profile or import one from the community.')
+
+            if cloud_info and cloud_info.code then
+                -- Profile has already been shared — show code and update button
+                render_menu_header(string.format(
+                    'Shared as: "%s"  |  Code: %s',
+                    tostring(cloud_info.display_name or ''),
+                    tostring(cloud_info.code)
+                ))
+                gui.elements.cloud_share_btn:render(
+                    'Update Cloud Profile',
+                    'Re-upload the current settings to the cloud — overwrites your previous share.'
+                )
+            else
+                -- Not shared yet — show name input + share button
+                gui.elements.cloud_share_name:render(
+                    'Display Name',
+                    'Name shown in the cloud listing',
+                    true, 'Share Profile',
+                    'Upload this profile to the cloud (leaves name blank to use the local profile name)'
+                )
+            end
+
+            gui.elements.cloud_browse_btn:render(
+                'Browse Class Profiles',
+                'List cloud profiles available for your current class — results shown in console'
+            )
+
+            gui.elements.cloud_import_code:render(
+                'Share Code',
+                'Enter a share code, then click Import',
+                true, 'Import Profile',
+                'Download and apply the profile with this code'
+            )
+
+            gui.elements.cloud_tree:pop()
+        end
 
         -- Buff dropdown filters
         if gui.elements.buff_filter_tree:push('Buff Dropdown Filters') then

@@ -5,11 +5,31 @@ local spell_config    = require 'core.spell_config'
 local spell_tracker   = require 'core.spell_tracker'
 local rotation_engine = require 'core.rotation_engine'
 local profile_io      = require 'core.profile_io'
-local buff_provider    = require 'core.buff_provider'
+local buff_provider   = require 'core.buff_provider'
+local cloud_share     = require 'core.cloud_share'
 local logger          = require 'core.logger'
 
 -- Start file logger immediately
 logger.enable()
+
+-- Sanitize a spell config loaded from JSON.
+-- Fixes the crash where require_buff=true but no buff is actually defined
+-- (buff_hash=0 AND buff_name=''), which causes a dead buff condition that
+-- silently prevents the spell from ever firing.
+local function _sanitize_spell_cfg(sid, cfg)
+    if not cfg or type(cfg) ~= 'table' then return cfg end
+    if cfg.require_buff and (cfg.buff_hash == nil or cfg.buff_hash == 0)
+                        and (cfg.buff_name == nil or cfg.buff_name == '') then
+        cfg.require_buff = false
+        console.print(string.format(
+            '[UniversalRotation] WARNING: Spell %s had require_buff=true but no buff defined. ' ..
+            'Auto-fixed to require_buff=false. ' ..
+            'Please set the correct buff in the rotation menu.',
+            tostring(sid)
+        ))
+    end
+    return cfg
+end
 
 local equipped_ids  = {}   -- spell IDs currently on bar
 local all_known_ids = {}   -- union of all ever-seen IDs (persists through bar swaps)
@@ -174,7 +194,9 @@ end
 local _profile_names  = {}   -- ordered list of profile names for current class
 local _active_profile = 'Default'
 local _last_profile_idx = nil  -- tracks combo selection to detect switches
-local _rename_was_open = false -- tracks input_text open state to detect submission
+local _rename_was_open          = false
+local _cloud_share_name_was_open = false
+local _cloud_import_code_was_open = false
 
 local function _manifest_path_for(class_key)
     return get_script_root() .. 'universal_rotation_' .. tostring(class_key) .. '_manifest.json'
@@ -243,10 +265,9 @@ local function _get_active_profile_index()
     return 0
 end
 
-local function _export_profile(class_key, profile_name)
-    class_key = class_key or _class_key()
+local function _build_profile_json(class_key, profile_name)
+    class_key    = class_key    or _class_key()
     profile_name = profile_name or _active_profile
-
     local data = {
         version = 2,
         class   = class_key,
@@ -261,17 +282,21 @@ local function _export_profile(class_key, profile_name)
             overlay_y          = gui.elements.overlay_y:get(),
             overlay_show_buffs = gui.elements.overlay_show_buffs and gui.elements.overlay_show_buffs:get() or false,
         },
-        spells = {},
+        spells       = {},
         buff_history = buff_provider.export_history(),
     }
-
     for _, sid in ipairs(all_known_ids) do
         data.spells[tostring(sid)] = spell_config.get(sid)
     end
-    -- Include virtual evade spell in profile
     data.spells[tostring(gui.VIRTUAL_EVADE_ID)] = spell_config.get(gui.VIRTUAL_EVADE_ID)
+    return profile_io.to_json(data)
+end
 
-    local json = profile_io.to_json(data)
+local function _export_profile(class_key, profile_name)
+    class_key    = class_key    or _class_key()
+    profile_name = profile_name or _active_profile
+
+    local json = _build_profile_json(class_key, profile_name)
     local path = _profile_path_for(class_key, profile_name)
     local ok, err = pcall(function()
         local f = assert(io.open(path, 'w'))
@@ -288,8 +313,47 @@ local function _export_profile(class_key, profile_name)
     _save_manifest(class_key)
 end
 
+-- Apply a parsed profile data table to the current session.
+local function _apply_profile_data(data, display_name, silent)
+    if type(data) ~= 'table' then return false end
+
+    if type(data.global) == 'table' then
+        _set_element(gui.elements.scan_range,         data.global.scan_range)
+        _set_element(gui.elements.anim_delay,         data.global.anim_delay)
+        _set_element(gui.elements.global_min_enemies, data.global.global_min_enemies)
+        _set_element(gui.elements.debug_mode,         data.global.debug_mode)
+        _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
+        _set_element(gui.elements.overlay_x,          data.global.overlay_x)
+        _set_element(gui.elements.overlay_y,          data.global.overlay_y)
+        _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
+    end
+
+    if type(data.buff_history) == 'table' then
+        buff_provider.import_history(data.buff_history)
+    end
+
+    if type(data.spells) == 'table' then
+        for sid_str, cfg in pairs(data.spells) do
+            local sid = tonumber(sid_str)
+            if sid and type(cfg) == 'table' then
+                cfg = _sanitize_spell_cfg(sid_str, cfg)
+                spell_config.apply(sid, cfg)
+                if not all_known_set[sid] then
+                    all_known_set[sid] = true
+                    table.insert(all_known_ids, sid)
+                end
+            end
+        end
+    end
+
+    if not silent then
+        console.print('[UniversalRotation] Loaded profile: ' .. tostring(display_name))
+    end
+    return true
+end
+
 local function _import_profile(class_key, profile_name, silent)
-    class_key = class_key or _class_key()
+    class_key    = class_key    or _class_key()
     profile_name = profile_name or _active_profile
 
     local path = _profile_path_for(class_key, profile_name)
@@ -311,39 +375,38 @@ local function _import_profile(class_key, profile_name, silent)
         return false
     end
 
-    if type(data.global) == 'table' then
-        _set_element(gui.elements.scan_range,         data.global.scan_range)
-        _set_element(gui.elements.anim_delay,         data.global.anim_delay)
-        _set_element(gui.elements.global_min_enemies, data.global.global_min_enemies)
-        _set_element(gui.elements.debug_mode,         data.global.debug_mode)
-        _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
-        _set_element(gui.elements.overlay_x,          data.global.overlay_x)
-        _set_element(gui.elements.overlay_y,          data.global.overlay_y)
-        _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
-    end
+    return _apply_profile_data(data, profile_name, silent)
+end
 
-    -- Restore buff history so previously seen buffs appear in dropdowns
-    if type(data.buff_history) == 'table' then
-        buff_provider.import_history(data.buff_history)
+-- Import a profile directly from a JSON string (e.g. downloaded from cloud).
+-- Saves to disk under profile_name before applying so it persists.
+local function _import_from_json(json_str, profile_name)
+    profile_name = profile_name or ('Cloud-' .. tostring(os.time()))
+    local data = profile_io.from_json(json_str)
+    if type(data) ~= 'table' then
+        console.print('[UniversalRotation] Cloud import: invalid profile data')
+        return false
     end
-
-    if type(data.spells) == 'table' then
-        for sid_str, cfg in pairs(data.spells) do
-            local sid = tonumber(sid_str)
-            if sid and type(cfg) == 'table' then
-                spell_config.apply(sid, cfg)
-                if not all_known_set[sid] then
-                    all_known_set[sid] = true
-                    table.insert(all_known_ids, sid)
-                end
-            end
-        end
+    -- Save to disk so the profile persists across reloads
+    local class_key = _class_key()
+    -- Add to profile list if not already present
+    local found = false
+    for _, n in ipairs(_profile_names) do
+        if n == profile_name then found = true; break end
     end
-
-    if not silent then
-        console.print('[UniversalRotation] Loaded profile: ' .. profile_name)
+    if not found then
+        table.insert(_profile_names, profile_name)
     end
-    return true
+    _active_profile = profile_name
+    local path = _profile_path_for(class_key, profile_name)
+    pcall(function()
+        local fw = io.open(path, 'w')
+        if fw then fw:write(json_str); fw:close() end
+    end)
+    _save_manifest(class_key)
+    _last_profile_idx = _get_active_profile_index()
+    _set_element(gui.elements.profile_combo, _last_profile_idx)
+    return _apply_profile_data(data, profile_name, false)
 end
 
 local function _switch_profile(new_name, class_key)
@@ -528,9 +591,95 @@ local function handle_profile_io()
             _last_profile_idx = sel
         end
     end
+
+    -- ---- Cloud sharing ----
+    local ck = _class_key()
+
+    -- Update existing share (checkbox button — only visible when profile is already shared)
+    if gui.elements.cloud_share_btn and gui.elements.cloud_share_btn:get() then
+        console.print('[UniversalRotation] Uploading profile to cloud...')
+        local json = _build_profile_json(ck, _active_profile)
+        local result = cloud_share.share(ck, _active_profile, json, nil)
+        if result.ok then
+            console.print('[UniversalRotation] Cloud profile updated!  Code: ' .. result.code)
+        else
+            console.print('[UniversalRotation] Cloud update failed: ' .. tostring(result.error))
+        end
+        gui.elements.cloud_share_btn:set(false)
+    end
+
+    -- New share (input_text with button — visible when no share exists yet)
+    local cs_el = gui.elements.cloud_share_name
+    if cs_el then
+        local open_now = cs_el:is_open()
+        if _cloud_share_name_was_open and not open_now then
+            local display_name = cs_el:get()
+            if not display_name or display_name == '' then display_name = _active_profile end
+            console.print('[UniversalRotation] Uploading profile to cloud as "' .. display_name .. '"...')
+            local json = _build_profile_json(ck, _active_profile)
+            local result = cloud_share.share(ck, _active_profile, json, display_name)
+            if result.ok then
+                console.print('[UniversalRotation] Profile shared!  Code: ' .. result.code
+                    .. '  (share this code with others so they can import it)')
+            else
+                console.print('[UniversalRotation] Cloud share failed: ' .. tostring(result.error))
+            end
+        end
+        _cloud_share_name_was_open = open_now
+    end
+
+    -- Browse class profiles
+    if gui.elements.cloud_browse_btn and gui.elements.cloud_browse_btn:get() then
+        console.print('[UniversalRotation] Fetching cloud profiles for ' .. ck .. '...')
+        local profiles, err = cloud_share.list(ck)
+        if profiles then
+            if #profiles == 0 then
+                console.print('[UniversalRotation] No shared profiles found for this class yet.')
+            else
+                console.print(string.format('[UniversalRotation] %d profile(s) available:', #profiles))
+                for _, p in ipairs(profiles) do
+                    console.print(string.format('  Code: %-10s  Name: %s',
+                        tostring(p.code or '?'), tostring(p.name or 'Unnamed')))
+                end
+            end
+        else
+            console.print('[UniversalRotation] Browse failed: ' .. tostring(err))
+        end
+        gui.elements.cloud_browse_btn:set(false)
+    end
+
+    -- Import by code (input_text with button)
+    local ci_el = gui.elements.cloud_import_code
+    if ci_el then
+        local open_now = ci_el:is_open()
+        if _cloud_import_code_was_open and not open_now then
+            local code = ci_el:get()
+            if code and code ~= '' then
+                console.print('[UniversalRotation] Downloading cloud profile ' .. code .. '...')
+                local result = cloud_share.download(code)
+                if result.ok then
+                    local profile_name = result.name or ('Cloud-' .. code)
+                    local ok = _import_from_json(result.data, profile_name)
+                    if ok then
+                        console.print('[UniversalRotation] Imported cloud profile: ' .. profile_name)
+                    end
+                else
+                    console.print('[UniversalRotation] Download failed: ' .. tostring(result.error))
+                end
+            end
+        end
+        _cloud_import_code_was_open = open_now
+    end
 end
 
+local _cloud_ready = false
+
 local function handle_class_profiles()
+    if not _cloud_ready then
+        cloud_share.init(get_script_root())
+        _cloud_ready = true
+    end
+
     local ck = _class_key()
     if not last_class_key then
         last_class_key = ck
@@ -758,11 +907,15 @@ on_update(function()
     if not lp then return end
     if lp:is_dead() then return end
 
-    rotation_engine.tick(equipped_ids, settings)
+    local ok, err = pcall(rotation_engine.tick, equipped_ids, settings)
+    if not ok then
+        console.print('[UniversalRotation] rotation_engine.tick error: ' .. tostring(err))
+    end
 end)
 
 on_render_menu(function()
-    gui.render(spell_config, equipped_ids, all_known_ids, _profile_names, _active_profile)
+    local cloud_info = cloud_share.get_share_info(_class_key(), _active_profile)
+    gui.render(spell_config, equipped_ids, all_known_ids, _profile_names, _active_profile, cloud_info)
 end)
 
 on_render(function()
