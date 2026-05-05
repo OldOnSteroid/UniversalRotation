@@ -194,9 +194,64 @@ end
 local _profile_names  = {}   -- ordered list of profile names for current class
 local _active_profile = 'Default'
 local _last_profile_idx = nil  -- tracks combo selection to detect switches
-local _rename_was_open          = false
-local _cloud_share_name_was_open = false
-local _cloud_import_code_was_open = false
+
+-- Cached result of the last cloud listing fetch (auto-loaded on class
+-- detection; refreshed after a successful share/upload).  Drives the
+-- in-menu picker -- gui.lua reads this each frame to render the combo.
+-- profiles == nil means "never fetched"; an empty table means "fetched
+-- and the server had nothing for this class".
+local _cloud_browse = {
+    class       = '',
+    profiles    = nil,
+    error       = nil,
+    fetched_at  = 0,
+}
+
+-- Sentinel: which class we have already auto-loaded for.  Reset when the
+-- player switches characters or after a successful share, so the next
+-- handle_class_profiles tick refreshes the listing for the new context.
+local _cloud_auto_loaded_class = nil
+
+-- Pre-format combo labels + detail lines from a listing array.  Done
+-- once per fetch so the per-frame render path stays O(1) (see Lua perf
+-- rules).  ASCII-only output (the menu font renders U+2014 as "?").
+--
+-- The combo entry stays narrow ("name (code)") so it fits the widget;
+-- the detail line shown below the combo carries the full info.
+local function _build_cloud_labels(profiles)
+    local labels  = {}
+    local details = {}
+    for i, p in ipairs(profiles or {}) do
+        local code = tostring(p.code or '------')
+        local name = tostring(p.name or 'Unnamed')
+        local short_name = name
+        if #short_name > 25 then short_name = short_name:sub(1, 22) .. '...' end
+
+        labels[i] = string.format('%s (%s)', short_name, code)
+
+        local upd = 'unknown'
+        if type(p.updated_at) == 'number' and p.updated_at > 0 then
+            upd = os.date('%Y-%m-%d %H:%M', math.floor(p.updated_at))
+        end
+        details[i] = string.format('Code: %s  |  Updated: %s', code, upd)
+    end
+    return labels, details
+end
+
+-- Apply a profile listing to _cloud_browse and reset the combo selection
+-- so a stale index can't survive a list shrink.
+local function _apply_cloud_listing(class_key, profiles, fetched_at)
+    local labels, details = _build_cloud_labels(profiles)
+    _cloud_browse.class      = class_key
+    _cloud_browse.profiles   = profiles
+    _cloud_browse.labels     = labels
+    _cloud_browse.details    = details
+    _cloud_browse.error      = nil
+    _cloud_browse.fetched_at = fetched_at or os.time()
+    if gui.elements.cloud_browse_combo and gui.elements.cloud_browse_combo.set then
+        pcall(function() gui.elements.cloud_browse_combo:set(0) end)
+    end
+end
 
 local function _manifest_path_for(class_key)
     return get_script_root() .. 'universal_rotation_' .. tostring(class_key) .. '_manifest.json'
@@ -531,23 +586,10 @@ local function _rename_profile(new_name, class_key)
 end
 
 local function handle_profile_io()
-    -- Manual export/import buttons (saves/loads the active profile)
-    if gui.elements.export_profile and gui.elements.export_profile:get() then
-        _export_profile()
-        gui.elements.export_profile:set(false)
-    end
-    if gui.elements.import_profile and gui.elements.import_profile:get() then
-        _import_profile(nil, _active_profile, false)
-        gui.elements.import_profile:set(false)
-    end
-    if gui.elements.reload_json and gui.elements.reload_json:get() then
-        local ok = _import_profile(nil, _active_profile, false)
-        if ok then
-            spell_config.invalidate_buff_lists()
-            console.print('[UniversalRotation] JSON reloaded: ' .. _active_profile)
-        end
-        gui.elements.reload_json:set(false)
-    end
+    -- Manual export/import/reload buttons removed -- cloud sharing is the
+    -- only blessed sync path now.  _export_profile / _import_profile are
+    -- still called below (and from the cloud import path) for on-disk
+    -- persistence across profile switches and sessions.
 
     -- New profile button
     if gui.elements.new_profile and gui.elements.new_profile:get() then
@@ -565,19 +607,18 @@ local function handle_profile_io()
         gui.elements.delete_profile:set(false)
     end
 
-    -- Profile rename input
-    local rename_el = gui.elements.profile_rename
-    if rename_el then
-        local currently_open = rename_el:is_open()
-        if _rename_was_open and not currently_open then
-            local new_name = rename_el:get()
-            if new_name and new_name ~= '' then
-                _rename_profile(new_name)
-                _last_profile_idx = _get_active_profile_index()
-                _set_element(gui.elements.profile_combo, _last_profile_idx)
-            end
+    -- Profile rename: fires when the standalone Apply Rename checkbox
+    -- ticks to true; reads the current text from profile_rename and
+    -- resets the checkbox immediately.
+    if gui.elements.profile_rename_btn and gui.elements.profile_rename_btn:get() then
+        gui.elements.profile_rename_btn:set(false)
+        local rename_el = gui.elements.profile_rename
+        local new_name = rename_el and rename_el:get() or ''
+        if new_name and new_name ~= '' then
+            _rename_profile(new_name)
+            _last_profile_idx = _get_active_profile_index()
+            _set_element(gui.elements.profile_combo, _last_profile_idx)
         end
-        _rename_was_open = currently_open
     end
 
     -- Profile dropdown switching
@@ -602,63 +643,57 @@ local function handle_profile_io()
         local result = cloud_share.share(ck, _active_profile, json, nil)
         if result.ok then
             console.print('[UniversalRotation] Cloud profile updated!  Code: ' .. result.code)
+            -- Force the auto-loader to refetch on the next tick so the
+            -- updated_at on the user's entry refreshes in the picker.
+            _cloud_auto_loaded_class = nil
         else
             console.print('[UniversalRotation] Cloud update failed: ' .. tostring(result.error))
         end
         gui.elements.cloud_share_btn:set(false)
     end
 
-    -- New share (input_text with button — visible when no share exists yet)
-    local cs_el = gui.elements.cloud_share_name
-    if cs_el then
-        local open_now = cs_el:is_open()
-        if _cloud_share_name_was_open and not open_now then
-            local display_name = cs_el:get()
-            if not display_name or display_name == '' then display_name = _active_profile end
-            console.print('[UniversalRotation] Uploading profile to cloud as "' .. display_name .. '"...')
-            local json = _build_profile_json(ck, _active_profile)
-            local result = cloud_share.share(ck, _active_profile, json, display_name)
-            if result.ok then
-                console.print('[UniversalRotation] Profile shared!  Code: ' .. result.code
-                    .. '  (share this code with others so they can import it)')
-            else
-                console.print('[UniversalRotation] Cloud share failed: ' .. tostring(result.error))
-            end
-        end
-        _cloud_share_name_was_open = open_now
-    end
-
-    -- Browse class profiles
-    if gui.elements.cloud_browse_btn and gui.elements.cloud_browse_btn:get() then
-        console.print('[UniversalRotation] Fetching cloud profiles for ' .. ck .. '...')
-        local profiles, err = cloud_share.list(ck)
-        if profiles then
-            if #profiles == 0 then
-                console.print('[UniversalRotation] No shared profiles found for this class yet.')
-            else
-                console.print(string.format('[UniversalRotation] %d profile(s) available:', #profiles))
-                for _, p in ipairs(profiles) do
-                    console.print(string.format('  Code: %-10s  Name: %s',
-                        tostring(p.code or '?'), tostring(p.name or 'Unnamed')))
-                end
-            end
+    -- New share: standalone Share Profile checkbox (visible only when
+    -- the profile has not been shared yet -- the GUI hides the button
+    -- in the already-shared branch).
+    if gui.elements.cloud_share_new_btn and gui.elements.cloud_share_new_btn:get() then
+        gui.elements.cloud_share_new_btn:set(false)
+        local cs_el = gui.elements.cloud_share_name
+        local display_name = cs_el and cs_el:get() or ''
+        if not display_name or display_name == '' then display_name = _active_profile end
+        console.print('[UniversalRotation] Uploading profile to cloud as "' .. display_name .. '"...')
+        local json = _build_profile_json(ck, _active_profile)
+        local result = cloud_share.share(ck, _active_profile, json, display_name)
+        if result.ok then
+            console.print('[UniversalRotation] Profile shared!  Code: ' .. result.code
+                .. '  (share this code with others so they can import it)')
+            -- Invalidate so the picker shows the brand-new entry.
+            _cloud_auto_loaded_class = nil
         else
-            console.print('[UniversalRotation] Browse failed: ' .. tostring(err))
+            console.print('[UniversalRotation] Cloud share failed: ' .. tostring(result.error))
         end
-        gui.elements.cloud_browse_btn:set(false)
     end
 
-    -- Import by code (input_text with button)
-    local ci_el = gui.elements.cloud_import_code
-    if ci_el then
-        local open_now = ci_el:is_open()
-        if _cloud_import_code_was_open and not open_now then
-            local code = ci_el:get()
-            if code and code ~= '' then
-                console.print('[UniversalRotation] Downloading cloud profile ' .. code .. '...')
-                local result = cloud_share.download(code)
+    -- (Browse Class Profiles button was removed; the listing is now
+    -- auto-loaded by _auto_load_cloud_listing on class detection and
+    -- after a successful share/update.)
+
+    -- Import Selected (in-menu picker) -- downloads the profile the user
+    -- highlighted in the cloud_browse_combo and applies it.
+    if gui.elements.cloud_import_selected_btn and gui.elements.cloud_import_selected_btn:get() then
+        gui.elements.cloud_import_selected_btn:set(false)
+        local profs = _cloud_browse.profiles
+        if type(profs) == 'table' and #profs > 0 then
+            local sel = 0
+            if gui.elements.cloud_browse_combo and gui.elements.cloud_browse_combo.get then
+                local s = gui.elements.cloud_browse_combo:get()
+                if type(s) == 'number' then sel = s end
+            end
+            local entry = profs[sel + 1]   -- combo is 0-based
+            if entry and entry.code then
+                console.print('[UniversalRotation] Downloading cloud profile ' .. entry.code .. '...')
+                local result = cloud_share.download(entry.code)
                 if result.ok then
-                    local profile_name = result.name or ('Cloud-' .. code)
+                    local profile_name = result.name or entry.name or ('Cloud-' .. entry.code)
                     local ok = _import_from_json(result.data, profile_name)
                     if ok then
                         console.print('[UniversalRotation] Imported cloud profile: ' .. profile_name)
@@ -667,12 +702,71 @@ local function handle_profile_io()
                     console.print('[UniversalRotation] Download failed: ' .. tostring(result.error))
                 end
             end
+        else
+            console.print('[UniversalRotation] No browsed profiles to import — click Browse first.')
         end
-        _cloud_import_code_was_open = open_now
+    end
+
+    -- Import by code: standalone Import Profile checkbox.  Reads the
+    -- code from the cloud_import_code text field and downloads.
+    if gui.elements.cloud_import_code_btn and gui.elements.cloud_import_code_btn:get() then
+        gui.elements.cloud_import_code_btn:set(false)
+        local ci_el = gui.elements.cloud_import_code
+        local code = ci_el and ci_el:get() or ''
+        if code and code ~= '' then
+            console.print('[UniversalRotation] Downloading cloud profile ' .. code .. '...')
+            local result = cloud_share.download(code)
+            if result.ok then
+                local profile_name = result.name or ('Cloud-' .. code)
+                local ok = _import_from_json(result.data, profile_name)
+                if ok then
+                    console.print('[UniversalRotation] Imported cloud profile: ' .. profile_name)
+                end
+            else
+                console.print('[UniversalRotation] Download failed: ' .. tostring(result.error))
+            end
+        end
     end
 end
 
 local _cloud_ready = false
+
+-- One-shot per class: render the on-disk listing cache immediately, then
+-- attempt a fresh fetch and update both the live state and the cache.
+-- Silent on network failure so a server outage just leaves the cached
+-- listing visible.  Blocking (curl is synchronous) -- runs at most once
+-- per class change because handle_class_profiles is the only caller and
+-- the sentinel guards re-entry.
+local function _auto_load_cloud_listing(ck)
+    if not ck or ck == '' then return end
+    -- Skip while the class is unknown (char-select / loading screens) --
+    -- the next on_update tick that resolves the real class will retry.
+    if ck == 'unknown' then return end
+    if _cloud_auto_loaded_class == ck then return end
+    _cloud_auto_loaded_class = ck
+
+    -- Disk cache first so the picker has data to render even if the
+    -- server is unreachable.
+    local cached = cloud_share.load_cached_listing(ck)
+    if type(cached) == 'table' then
+        _apply_cloud_listing(ck, cached, os.time())
+    else
+        _cloud_browse.class      = ck
+        _cloud_browse.profiles   = nil
+        _cloud_browse.labels     = nil
+        _cloud_browse.details    = nil
+        _cloud_browse.error      = nil
+        _cloud_browse.fetched_at = 0
+    end
+
+    -- Attempt fresh fetch.  Failures are intentionally silent here --
+    -- we don't want a server outage to spam the console on every load.
+    local profs = cloud_share.list(ck)
+    if type(profs) == 'table' then
+        _apply_cloud_listing(ck, profs, os.time())
+        cloud_share.save_cached_listing(ck, profs)
+    end
+end
 
 local function handle_class_profiles()
     if not _cloud_ready then
@@ -687,6 +781,7 @@ local function handle_class_profiles()
         _import_profile(ck, _active_profile, true)
         _last_profile_idx = _get_active_profile_index()
         _set_element(gui.elements.profile_combo, _last_profile_idx)
+        _auto_load_cloud_listing(ck)
         return
     end
     if ck ~= last_class_key then
@@ -708,6 +803,9 @@ local function handle_class_profiles()
         _last_profile_idx = _get_active_profile_index()
         _set_element(gui.elements.profile_combo, _last_profile_idx)
     end
+
+    -- Picks up the initial load and any post-share invalidations.
+    _auto_load_cloud_listing(ck)
 end
 local function render_overlay()
     if not is_enabled() then return end
@@ -915,7 +1013,7 @@ end)
 
 on_render_menu(function()
     local cloud_info = cloud_share.get_share_info(_class_key(), _active_profile)
-    gui.render(spell_config, equipped_ids, all_known_ids, _profile_names, _active_profile, cloud_info)
+    gui.render(spell_config, equipped_ids, all_known_ids, _profile_names, _active_profile, cloud_info, _cloud_browse)
 end)
 
 on_render(function()

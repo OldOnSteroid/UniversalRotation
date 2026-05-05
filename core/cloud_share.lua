@@ -28,11 +28,14 @@ local cloud_share = {}
 ]]
 
 -- ── Configuration ────────────────────────────────────────────────────────────
--- Set BASE_URL to wherever you host the server before releasing to users.
-local BASE_URL = 'http://localhost:3000'
+-- Server lives on the same on-prem box as the warmap server, in its own
+-- container on port 8001 (warmap is on 8000).  Source is at /opt/rotation-share
+-- on the host; see docker-compose.yml there.  Swap to a public host
+-- (e.g. https://share.d4data.live) once it is fronted by Cloudflare/HAProxy.
+local BASE_URL = 'http://192.168.10.91:8001'
 -- Shared secret embedded in all requests — not real security, just gates access
--- to users who have the plugin. Must match what your server expects.
-local API_KEY  = 'ur-community-2024'
+-- to users who have the plugin. Must match ROTATION_SHARE_API_KEY on the server.
+local API_KEY  = '818aa8b191d396da7523ea061076946d81a2d1e821fa3468b57e463057439adc'
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local profile_io = require 'core.profile_io'
@@ -107,12 +110,42 @@ local function _patch(path, body_json)
     return out
 end
 
+-- GETs (listing + download) use a short timeout so an unreachable server
+-- can't freeze the game thread for 15s on the auto-load path.  Bodies
+-- are tiny (listing JSON or a single profile JSON) so 5s is generous.
 local function _get(path)
     local cmd = string.format(
-        'curl -s -m 15 "%s%s" -H "X-API-Key: %s"',
+        'curl -s -m 5 "%s%s" -H "X-API-Key: %s"',
         BASE_URL, path, API_KEY
     )
     return _run(cmd)
+end
+
+-- ── Per-class listing cache (used by the auto-load path) ─────────────────────
+-- Stored on disk as cloud_listing_<class>.json so the dropdown can render
+-- instantly on script load even when the server is unreachable.
+
+local function _listing_cache_path(class_key)
+    return _script_root .. 'cloud_listing_' .. tostring(class_key) .. '.json'
+end
+
+function cloud_share.load_cached_listing(class_key)
+    if not class_key or tostring(class_key) == '' then return nil end
+    if _script_root == '' then return nil end
+    local text = profile_io.read_file(_listing_cache_path(class_key))
+    if not text then return nil end
+    local data = profile_io.from_json(text)
+    if type(data) == 'table' then return data end
+    return nil
+end
+
+function cloud_share.save_cached_listing(class_key, profiles)
+    if not class_key or tostring(class_key) == '' then return end
+    if _script_root == '' then return end
+    profile_io.write_file(
+        _listing_cache_path(class_key),
+        profile_io.to_json(profiles or {})
+    )
 end
 
 -- ── Public API ────────────────────────────────────────────────────────────────
@@ -174,8 +207,15 @@ function cloud_share.share(class_key, profile_name, profile_data_json, display_n
 end
 
 -- List profiles available for a class.
--- Returns: array of { code, name, updated_at }, or nil + error_string
+-- Returns: array of { code, name, updated_at }, or nil + error_string.
+-- updated_at is epoch seconds (number) — caller can os.date() it.
 function cloud_share.list(class_key)
+    -- Guard: server requires the class param.  Sending an empty value
+    -- would 422 from the server but we'd surface a confusing error to
+    -- the user; bail early with a clear message instead.
+    if class_key == nil or tostring(class_key) == '' then
+        return nil, 'class key is empty — cannot list cloud profiles'
+    end
     local resp = _get('/api/profiles?class=' .. tostring(class_key))
     if not resp or resp == '' then
         return nil, 'No response — is the server running?'

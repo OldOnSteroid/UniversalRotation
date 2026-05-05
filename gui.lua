@@ -1,5 +1,5 @@
 local plugin_label   = 'magoogles_universal_rotation'
-local plugin_version = '1.0.2'
+local plugin_version = '1.0.3'
 console.print('Lua Plugin - Magoogles Universal Rotation - v' .. plugin_version)
 
 local gui = {}
@@ -75,26 +75,42 @@ gui.elements = {
     overlay_y       = si(0, 3000, 20, 'overlay_y'),
     overlay_show_buffs = cb(false, 'overlay_show_buffs'),
 
-    export_profile  = cb(false, 'export_profile'),
-    import_profile  = cb(false, 'import_profile'),
-    reload_json     = cb(false, 'reload_json'),
-
     -- Multi-profile controls
-    profile_combo   = combo_box:new(0, get_hash(plugin_label .. '_profile_combo')),
-    profile_rename  = input_text:new(get_hash(plugin_label .. '_profile_rename')),
-    new_profile     = cb(false, 'new_profile'),
-    delete_profile  = cb(false, 'delete_profile'),
+    profile_combo      = combo_box:new(0, get_hash(plugin_label .. '_profile_combo')),
+    profile_rename     = input_text:new(get_hash(plugin_label .. '_profile_rename')),
+    -- Standalone Apply button (the input_text's built-in button is awkward
+    -- because it fires on the input's close-edge; a checkbox-as-button is
+    -- more predictable -- main.lua reads it, applies, then resets it).
+    profile_rename_btn = cb(false, 'profile_rename_btn'),
+    new_profile        = cb(false, 'new_profile'),
+    delete_profile     = cb(false, 'delete_profile'),
 
     equipped_tree  = tree_node:new(1),
     inactive_tree  = tree_node:new(1),
     evade_tree     = tree_node:new(1),
 
-    -- Cloud sharing
-    cloud_tree        = tree_node:new(1),
-    cloud_share_name  = input_text:new(get_hash(plugin_label .. '_cloud_share_name')),
-    cloud_share_btn   = cb(false, 'cloud_share_btn'),
-    cloud_browse_btn  = cb(false, 'cloud_browse_btn'),
-    cloud_import_code = input_text:new(get_hash(plugin_label .. '_cloud_import_code')),
+    -- Unified profile management dropdown.  Wraps the per-class profile
+    -- selector, rename/new/delete, JSON reload, file export/import, and
+    -- the nested Cloud Sharing tree -- everything that touches a profile
+    -- lives in one place.
+    profiles_tree     = tree_node:new(1),
+
+    -- Cloud sharing (nested inside profiles_tree)
+    cloud_tree            = tree_node:new(1),
+    cloud_share_name      = input_text:new(get_hash(plugin_label .. '_cloud_share_name')),
+    -- Standalone Share button (replaces the input_text's built-in button --
+    -- main.lua reads it, uploads, then resets it on the next tick).
+    cloud_share_new_btn   = cb(false, 'cloud_share_new_btn'),
+    -- "Update existing share" -- only visible when the active profile has
+    -- already been shared.
+    cloud_share_btn       = cb(false, 'cloud_share_btn'),
+    -- In-menu picker for the auto-loaded cloud listing.  Items list is
+    -- rebuilt each render from cloud_browse.labels; index is read by
+    -- main.lua when the Import Selected button fires.
+    cloud_browse_combo        = combo_box:new(0, get_hash(plugin_label .. '_cloud_browse_combo')),
+    cloud_import_selected_btn = cb(false, 'cloud_import_selected_btn'),
+    cloud_import_code         = input_text:new(get_hash(plugin_label .. '_cloud_import_code')),
+    cloud_import_code_btn     = cb(false, 'cloud_import_code_btn'),
 
     -- Buff filter checkboxes (controls which categories appear in buff dropdowns)
     buff_filter_tree    = tree_node:new(2),
@@ -108,7 +124,11 @@ gui.elements = {
     bf_internal         = cb(false, 'bf_internal'),
 }
 
-gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, active_profile, cloud_info)
+-- cloud_browse: { profiles=array|nil, error=string|nil, fetched_at=number, class=string }
+--   profiles is the array returned by cloud_share.list (each entry has
+--   code, name, updated_at).  nil = never fetched.  Empty array = fetched
+--   and the server had nothing for this class.
+gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, active_profile, cloud_info, cloud_browse)
     if not gui.elements.main_tree:push('Magoogles Universal Rotation | v' .. plugin_version) then return end
 
     gui.elements.enabled:render('Enable', 'Enable the universal rotation')
@@ -122,17 +142,101 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
         gui.elements.hold_keybind:render('Hold Key', 'Press the key you want to hold to activate the rotation')
     end
 
-    -- ---- Profile Selector ----
-    if profile_names and #profile_names > 0 then
-        gui.elements.profile_combo:render('Profile', profile_names, 'Switch between saved profiles for this class. Settings update immediately.')
-        gui.elements.profile_rename:render('Rename Profile', 'Enter a new name for the active profile', true, 'Apply', 'Save the new profile name')
-        gui.elements.new_profile:render('New Profile (copy current)', 'Create a new profile by copying all current settings')
-        if #profile_names > 1 then
-            gui.elements.delete_profile:render('Delete Current Profile', 'Permanently delete the active profile and switch to another')
+    -- ---- Profiles (selector + rename/new/delete + cloud sharing) ----
+    if gui.elements.profiles_tree:push('Profiles') then
+        if profile_names and #profile_names > 0 then
+            gui.elements.profile_combo:render('Profile', profile_names, 'Switch between saved profiles for this class. Settings update immediately.')
+            -- Pass 5 args (require_button=false + empty strings) -- the
+            -- widget binding rejects nil for button_label/button_tooltip
+            -- and a Lua error here halts every later widget in the tree.
+            gui.elements.profile_rename:render('Rename Profile', 'Enter a new name for the active profile', false, '', '')
+            gui.elements.profile_rename_btn:render('Apply Rename', 'Save the new profile name from the field above.')
+            gui.elements.new_profile:render('New Profile (copy current)', 'Create a new profile by copying all current settings')
+            if #profile_names > 1 then
+                gui.elements.delete_profile:render('Delete Current Profile', 'Permanently delete the active profile and switch to another')
+            end
         end
-    end
 
-    gui.elements.reload_json:render('Reload JSON from disk', 'Re-read the active profile\'s JSON file and apply it now. Use this after a friend shares a profile file — no Lua reload needed.')
+        -- Cloud sharing (nested under Profiles)
+        if gui.elements.cloud_tree:push('Cloud Sharing') then
+            render_menu_header('Share your rotation profile or import one from the community.')
+
+            if cloud_info and cloud_info.code then
+                -- Profile has already been shared — show code and update button
+                render_menu_header(string.format(
+                    'Shared as: "%s"  |  Code: %s',
+                    tostring(cloud_info.display_name or ''),
+                    tostring(cloud_info.code)
+                ))
+                gui.elements.cloud_share_btn:render(
+                    'Update Cloud Profile',
+                    'Re-upload the current settings to the cloud — overwrites your previous share.'
+                )
+            else
+                -- Not shared yet — show name input + share button (separate)
+                gui.elements.cloud_share_name:render(
+                    'Display Name',
+                    'Name shown in the cloud listing',
+                    false, '', ''
+                )
+                gui.elements.cloud_share_new_btn:render(
+                    'Share Profile',
+                    'Upload this profile to the cloud (leaves name blank to use the local profile name).'
+                )
+            end
+
+            -- Auto-loaded picker: main.lua loads the on-disk cache on
+            -- script start and silently refreshes from the server.  No
+            -- manual Refresh button -- a server outage just leaves the
+            -- last-known-good listing in place.  Labels + details are
+            -- pre-built in main.lua so this path stays O(1).
+            if cloud_browse and type(cloud_browse.profiles) == 'table' then
+                local profs   = cloud_browse.profiles
+                local labels  = cloud_browse.labels  or {}
+                local details = cloud_browse.details or {}
+                if #profs == 0 then
+                    render_menu_header('No shared profiles for this class yet — be the first to share one.')
+                else
+                    render_menu_header(string.format(
+                        '%d profile(s) for %s',
+                        #profs, tostring(cloud_browse.class or '?')))
+                    gui.elements.cloud_browse_combo:render(
+                        'Cloud Profile', labels,
+                        'Pick a profile to import.  Listing refreshes automatically on script load and after sharing.')
+                    -- Detail line for the highlighted entry (full code +
+                    -- updated_at).  Combo only shows "name (code)" so the
+                    -- entry can stay narrow even with long names; the
+                    -- detail line gives the rest.
+                    local sel = 0
+                    if gui.elements.cloud_browse_combo.get then
+                        local s = gui.elements.cloud_browse_combo:get()
+                        if type(s) == 'number' then sel = s end
+                    end
+                    if sel < 0 then sel = 0 end
+                    if sel >= #profs then sel = #profs - 1 end
+                    local detail = details[sel + 1]
+                    if detail then render_menu_header(detail) end
+                    gui.elements.cloud_import_selected_btn:render(
+                        'Import Selected',
+                        'Download the highlighted profile and save it as a new local profile.')
+                end
+            end
+
+            gui.elements.cloud_import_code:render(
+                'Share Code',
+                'Paste a share code from a friend (useful for cross-class profiles).  For your own class, pick one from the Cloud Profile dropdown above.',
+                false, '', ''
+            )
+            gui.elements.cloud_import_code_btn:render(
+                'Import Profile',
+                'Download and apply the profile with the share code from the field above.'
+            )
+
+            gui.elements.cloud_tree:pop()
+        end
+
+        gui.elements.profiles_tree:pop()
+    end
 
     if gui.elements.global_tree:push('Global Settings') then
         gui.elements.scan_range:render('Scan Range (yds)', 'How far to scan for enemies', 1)
@@ -155,49 +259,6 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
             gui.elements.overlay_x:render('Overlay X', 'Overlay left position (px)', 1)
             gui.elements.overlay_y:render('Overlay Y', 'Overlay top position (px)', 1)
             gui.elements.overlay_show_buffs:render('Show Active Buff List', 'Show active buffs in the overlay')
-        end
-
-        gui.elements.export_profile:render('Export class profile', 'Write current settings to a JSON file for sharing')
-        gui.elements.import_profile:render('Import class profile', 'Load settings from the class JSON file (overwrites current)')
-
-        -- Cloud sharing
-        if gui.elements.cloud_tree:push('Cloud Sharing') then
-            render_menu_header('Share your rotation profile or import one from the community.')
-
-            if cloud_info and cloud_info.code then
-                -- Profile has already been shared — show code and update button
-                render_menu_header(string.format(
-                    'Shared as: "%s"  |  Code: %s',
-                    tostring(cloud_info.display_name or ''),
-                    tostring(cloud_info.code)
-                ))
-                gui.elements.cloud_share_btn:render(
-                    'Update Cloud Profile',
-                    'Re-upload the current settings to the cloud — overwrites your previous share.'
-                )
-            else
-                -- Not shared yet — show name input + share button
-                gui.elements.cloud_share_name:render(
-                    'Display Name',
-                    'Name shown in the cloud listing',
-                    true, 'Share Profile',
-                    'Upload this profile to the cloud (leaves name blank to use the local profile name)'
-                )
-            end
-
-            gui.elements.cloud_browse_btn:render(
-                'Browse Class Profiles',
-                'List cloud profiles available for your current class — results shown in console'
-            )
-
-            gui.elements.cloud_import_code:render(
-                'Share Code',
-                'Enter a share code, then click Import',
-                true, 'Import Profile',
-                'Download and apply the profile with this code'
-            )
-
-            gui.elements.cloud_tree:pop()
         end
 
         -- Buff dropdown filters
