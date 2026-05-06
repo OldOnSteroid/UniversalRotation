@@ -278,37 +278,137 @@ local function _profile_path()
     return _profile_path_for(_class_key(), _active_profile)
 end
 
+-- Convert a sanitized filename stem ("my_test_1") back to a display name
+-- ("My Test 1").  Lossy: case + non-alphanumerics from the original name
+-- are gone forever (the filename sanitizer in _profile_path_for is
+-- one-way), but title-cased + space-separated is a reasonable recovery.
+local function _safe_to_display(safe)
+    local s = (safe or ''):gsub('_', ' ')
+    s = s:gsub('^%s*(%l)', string.upper)
+    s = s:gsub('(%s)(%l)', function (sp, c) return sp .. c:upper() end)
+    return s
+end
+
+-- Best-effort scan of the script directory for orphan profile files
+-- belonging to `class_key`.  Pre-multi-profile versions saved per-name
+-- profile JSONs but no manifest -- after the multi-profile upgrade those
+-- files are invisible to the GUI selector unless we discover them.
+--
+-- Uses io.popen + cmd /b dir.  This causes a brief CMD console flash on
+-- Windows (Lua's GUI host doesn't pass CREATE_NO_WINDOW), so the scan
+-- is one-shot per class per script-version: _load_manifest latches a
+-- 'scanned_v1' flag in the manifest after the first run and skips this
+-- branch on subsequent loads.
+local function _discover_profiles(class_key)
+    local root = get_script_root()
+    if not root or root == '' then return {} end
+    local prefix = 'universal_rotation_' .. tostring(class_key) .. '_'
+    local cmd = 'cmd /c dir /b "' .. root .. prefix .. '*.json" 2>nul'
+    local h = io.popen(cmd, 'r')
+    if not h then return {} end
+    local found = {}
+    for line in h:lines() do
+        if line and line ~= '' then
+            -- Strip leading dir (defensive: depending on cwd, dir /b can
+            -- emit either bare names or paths) and the .json suffix.
+            local fname = line:match('([^\\/]+)$') or line
+            local stem  = fname:gsub('%.json$', '')
+            local safe  = stem:gsub('^' .. prefix, '')
+            -- Skip the manifest itself + the legacy single-profile file
+            -- (which is already auto-mapped to "Default") + empty stems.
+            if safe ~= '' and safe ~= 'manifest' and stem ~= ('universal_rotation_' .. tostring(class_key)) then
+                found[#found + 1] = safe
+            end
+        end
+    end
+    pcall(function () h:close() end)
+    return found
+end
+
+-- Merge discovered profile filenames into an existing list, skipping
+-- entries whose display name is already present (case-insensitive).
+-- Returns the merged list + a count of newly-added entries.
+local function _merge_discovered(existing, discovered_safe)
+    local lower_present = {}
+    for _, n in ipairs(existing) do lower_present[n:lower()] = true end
+    local merged, added = {}, 0
+    for _, n in ipairs(existing) do merged[#merged + 1] = n end
+    for _, safe in ipairs(discovered_safe) do
+        local display = _safe_to_display(safe)
+        if not lower_present[display:lower()] then
+            merged[#merged + 1] = display
+            lower_present[display:lower()] = true
+            added = added + 1
+        end
+    end
+    return merged, added
+end
+
+-- Latch that's true once the orphan-profile discovery scan has run for
+-- the current class.  Persisted in the manifest JSON as scanned_v1 so
+-- the scan only runs once per class per install.
+local _scanned_v1 = false
+
+-- Forward-declare so _load_manifest can call _save_manifest after the
+-- migration scan; the actual definition is right below.
+local _save_manifest
+
 local function _load_manifest(class_key)
     local path = _manifest_path_for(class_key)
+    local data = nil
     local f = io.open(path, 'r')
-    if not f then
-        -- No manifest yet — check if the old default profile exists
-        _profile_names = { 'Default' }
-        _active_profile = 'Default'
-        return
+    if f then
+        local json = f:read('*a')
+        f:close()
+        local parsed = profile_io.from_json(json)
+        if type(parsed) == 'table' then data = parsed end
     end
-    local json = f:read('*a')
-    f:close()
-    local data = profile_io.from_json(json)
-    if type(data) ~= 'table' then
-        _profile_names = { 'Default' }
+
+    if data then
+        _profile_names  = data.profiles or { 'Default' }
+        _active_profile = data.active   or 'Default'
+        _scanned_v1     = data.scanned_v1 == true
+    else
+        _profile_names  = { 'Default' }
         _active_profile = 'Default'
-        return
+        _scanned_v1     = false
     end
-    _profile_names = data.profiles or { 'Default' }
-    _active_profile = data.active or 'Default'
+
     -- Ensure active profile is in the list
     local found = false
     for _, n in ipairs(_profile_names) do
         if n == _active_profile then found = true; break end
     end
     if not found then _active_profile = _profile_names[1] or 'Default' end
+
+    -- One-time orphan-profile migration: pre-multi-profile UR versions
+    -- wrote per-name profile JSONs without ever touching the manifest,
+    -- so after the multi-profile upgrade those files were invisible to
+    -- the GUI selector and the user couldn't switch to / share them.
+    -- The scan walks the script dir once per class, folds anything it
+    -- finds into the manifest, and latches scanned_v1=true so we don't
+    -- re-scan (and re-flash a CMD console) every load.
+    if not _scanned_v1 then
+        local discovered = _discover_profiles(class_key)
+        if #discovered > 0 then
+            local merged, added = _merge_discovered(_profile_names, discovered)
+            if added > 0 then
+                _profile_names = merged
+                console.print(string.format(
+                    '[UniversalRotation] Migrated %d existing profile file(s) for %s into the manifest.',
+                    added, tostring(class_key)))
+            end
+        end
+        _scanned_v1 = true
+        _save_manifest(class_key)
+    end
 end
 
-local function _save_manifest(class_key)
+_save_manifest = function (class_key)
     local data = {
-        active   = _active_profile,
-        profiles = _profile_names,
+        active     = _active_profile,
+        profiles   = _profile_names,
+        scanned_v1 = _scanned_v1,
     }
     local json = profile_io.to_json(data)
     local path = _manifest_path_for(class_key)
