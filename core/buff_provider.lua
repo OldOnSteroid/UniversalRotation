@@ -169,10 +169,25 @@ local function read_buff(b)
     return h, n
 end
 
+-- Strip display-only status tags from a name before storing it.
+-- These tags ((Not Active), (missing), etc.) are appended at display
+-- time; they must never be baked into the stored name or they will
+-- be appended again on the next label rebuild, producing doubles.
+local function strip_status_tags(name)
+    if not name then return name end
+    -- Remove everything from '(Not Active)' onward (covers '(Not Active) [cat]')
+    local s = tostring(name):gsub('%s*%(Not Active%).*$', '')
+    s = s:gsub('%s*%(missing%)%s*$', '')
+    s = s:match('^%s*(.-)%s*$') or s  -- trim surrounding whitespace
+    return s
+end
+
 -- Record a buff into the persistent history (stores everything, filtering is at display time)
 local function remember_buff(hash, raw_name)
     if not hash or hash == 0 then return end
-    _buff_history[hash] = raw_name or _buff_history[hash] or ('Buff #' .. tostring(hash))
+    local name = strip_status_tags(raw_name) or _buff_history[hash] or ('Buff #' .. tostring(hash))
+    if name == '' then name = _buff_history[hash] or ('Buff #' .. tostring(hash)) end
+    _buff_history[hash] = name
 end
 
 -- Check if a buff's category is currently visible
@@ -259,30 +274,88 @@ function buff_provider.get_available_buffs_and_missing(saved_hash, saved_name)
         return items, hashes
     end
 
-    -- If the saved buff is already in our list, we're good
-    if index_by_hash and index_by_hash[saved_hash] ~= nil then
-        return items, hashes
-    end
-
-    -- Buff not in the visible list — copy first (the source may be cached) then add the saved selection
+    -- Always build a copy so we can reorder without touching the cache.
+    -- The configured buff is ALWAYS pinned to position 2 (index 1, 0-based),
+    -- right after "None". This makes desired_idx a stable invariant (always 1),
+    -- so any stale persisted combo index from a prior session can't go
+    -- out-of-range when the new widget is first rendered.
     local items_out  = {}
     local hashes_out = {}
     for i = 1, #items  do items_out[i]  = items[i]  end
     for i = 1, #hashes do hashes_out[i] = hashes[i] end
 
-    local raw_name = tostring(saved_name or '')
-    if raw_name == '' then raw_name = 'Buff #' .. tostring(saved_hash) end
+    local existing_idx = index_by_hash and index_by_hash[saved_hash]
+    if existing_idx ~= nil then
+        -- Buff is already visible — remove from its current sorted position
+        -- so we can re-insert at position 2 below.
+        local arr_idx = existing_idx + 1  -- convert 0-based to 1-based
+        table.remove(items_out,  arr_idx)
+        table.remove(hashes_out, arr_idx)
+    end
+
+    local raw_name = strip_status_tags(tostring(saved_name or ''))
+    if raw_name == '' then
+        raw_name = _buff_history[saved_hash] or ('Buff #' .. tostring(saved_hash))
+    end
 
     remember_buff(saved_hash, raw_name)
 
     local cat = buff_provider.categorize(raw_name)
-    local tag = is_visible(raw_name) and ' (Not Active)' or (' (Not Active) [' .. cat .. ']')
+    local tag
+    if _active_set[saved_hash] then
+        tag = ''
+    elseif is_visible(raw_name) then
+        tag = ' (Not Active)'
+    else
+        tag = ' (Not Active) [' .. cat .. ']'
+    end
     local label = pretty_name(raw_name) .. tag
 
-    table.insert(items_out, 2, label)
+    table.insert(items_out,  2, label)
     table.insert(hashes_out, 2, saved_hash)
 
     return items_out, hashes_out
+end
+
+-- Search all buff history for entries matching query (case-insensitive).
+-- Ignores category filters — returns everything. Useful for discovering
+-- buffs that are filtered out of the normal dropdown.
+function buff_provider.search_buffs(query)
+    if not query or query == '' then
+        return { 'None' }, { 0 }
+    end
+    local q = query:lower()
+
+    local active_list   = {}
+    local inactive_list = {}
+
+    for h, raw in pairs(_buff_history) do
+        local pn = pretty_name(raw)
+        if raw:lower():find(q, 1, true) or pn:lower():find(q, 1, true) then
+            if _active_set[h] then
+                active_list[#active_list + 1]   = { name = raw, hash = h }
+            else
+                inactive_list[#inactive_list + 1] = { name = raw, hash = h }
+            end
+        end
+    end
+
+    table.sort(active_list,   function(a, b) return a.name < b.name end)
+    table.sort(inactive_list, function(a, b) return a.name < b.name end)
+
+    local items  = { 'None' }
+    local hashes = { 0 }
+
+    for _, it in ipairs(active_list) do
+        items[#items + 1]  = pretty_name(it.name)
+        hashes[#hashes + 1] = it.hash
+    end
+    for _, it in ipairs(inactive_list) do
+        items[#items + 1]  = pretty_name(it.name) .. ' (Not Active)'
+        hashes[#hashes + 1] = it.hash
+    end
+
+    return items, hashes
 end
 
 function buff_provider.get_active_buffs()

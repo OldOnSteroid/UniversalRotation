@@ -272,7 +272,7 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
 
         -- Buff dropdown filters
         if gui.elements.buff_filter_tree:push('Buff Dropdown Filters') then
-            render_menu_header('Skill buffs are always shown. Toggle extra categories below.')
+            render_menu_header('Skill buffs are always shown. Toggle extra categories below. Tip: use the "Search Buffs" field inside each spell\'s settings to find any buff by name across all categories without changing these filters.')
             gui.elements.bf_paragon:render('Show Paragon',         'Include paragon board buffs')
             gui.elements.bf_talent:render('Show Talent',           'Include talent tree buffs')
             gui.elements.bf_item:render('Show Item / Gear',        'Include gear slot and item affix buffs')
