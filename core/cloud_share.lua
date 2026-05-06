@@ -30,9 +30,11 @@ local cloud_share = {}
 -- ── Configuration ────────────────────────────────────────────────────────────
 -- Server lives on the same on-prem box as the warmap server, in its own
 -- container on port 8001 (warmap is on 8000).  Source is at /opt/rotation-share
--- on the host; see docker-compose.yml there.  Swap to a public host
--- (e.g. https://share.d4data.live) once it is fronted by Cloudflare/HAProxy.
-local BASE_URL = 'http://192.168.10.91:8001'
+-- on the host; see docker-compose.yml there.  Public-facing URL is fronted
+-- by Cloudflare so off-LAN clients can reach it -- the prior LAN IP
+-- (http://192.168.10.91:8001) only worked from inside the same network,
+-- which is why uploads weren't visible from a different computer.
+local BASE_URL = 'https://share.d4data.live'
 -- Shared secret embedded in all requests — not real security, just gates access
 -- to users who have the plugin. Must match ROTATION_SHARE_API_KEY on the server.
 local API_KEY  = '818aa8b191d396da7523ea061076946d81a2d1e821fa3468b57e463057439adc'
@@ -180,8 +182,23 @@ function cloud_share.share(class_key, profile_name, profile_data_json, display_n
         if type(result) == 'table' and result.ok then
             return { ok = true, code = info.code, updated = true }
         end
-        return { ok = false, error = (type(result) == 'table' and result.error) or resp }
-    else
+        -- "profile not found" recovery.  Local index can hold a code
+        -- that doesn't exist on this server (e.g. LAN-only upload
+        -- when the BASE_URL was the LAN IP, then the user switched
+        -- to the public host -- different data store).  Clear the
+        -- stale entry and fall through to the CREATE branch so the
+        -- profile re-uploads cleanly with a fresh code.
+        local err_text = (type(result) == 'table' and result.error) or resp or ''
+        if type(err_text) == 'string' and err_text:lower():find('not found', 1, true) then
+            _share_index[_idx_key(class_key, profile_name)] = nil
+            _save_index()
+            -- fall through to CREATE below
+        else
+            return { ok = false, error = err_text }
+        end
+    end
+
+    do
         -- CREATE new share
         local body = profile_io.to_json({
             class = class_key,
