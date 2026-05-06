@@ -1,5 +1,5 @@
 local plugin_label   = 'magoogles_universal_rotation'
-local plugin_version = '1.0.3'
+local plugin_version = '1.0.4'
 console.print('Lua Plugin - Magoogles Universal Rotation - v' .. plugin_version)
 
 local gui = {}
@@ -104,7 +104,11 @@ gui.elements = {
     -- "Update existing share" -- only visible when the active profile has
     -- already been shared.
     cloud_share_btn       = cb(false, 'cloud_share_btn'),
-    -- In-menu picker for the auto-loaded cloud listing.  Items list is
+    -- Manual refresh.  The auto-load on script start reads the on-disk
+    -- cache only; this button is the only path that actually hits the
+    -- server (so the curl-spawn console flash is always user-triggered).
+    cloud_refresh_btn     = cb(false, 'cloud_refresh_btn'),
+    -- In-menu picker for the cached cloud listing.  Items list is
     -- rebuilt each render from cloud_browse.labels; index is read by
     -- main.lua when the Import Selected button fires.
     cloud_browse_combo        = combo_box:new(0, get_hash(plugin_label .. '_cloud_browse_combo')),
@@ -185,24 +189,29 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
                 )
             end
 
-            -- Auto-loaded picker: main.lua loads the on-disk cache on
-            -- script start and silently refreshes from the server.  No
-            -- manual Refresh button -- a server outage just leaves the
-            -- last-known-good listing in place.  Labels + details are
-            -- pre-built in main.lua so this path stays O(1).
+            -- Manual refresh from server.  The auto-load on script start
+            -- reads only the on-disk cache (no curl/CMD console flash);
+            -- this button is the only path that hits the server, so the
+            -- cost is always tied to a user-visible action.
+            gui.elements.cloud_refresh_btn:render(
+                'Refresh from Server',
+                'Pull the latest cloud listing for your class.  Required to see profiles other players have shared since the last refresh; cached entries stay visible if the server is unreachable.')
+
+            -- Picker.  Labels + details are pre-built in main.lua so this
+            -- render path stays O(1) per frame.
             if cloud_browse and type(cloud_browse.profiles) == 'table' then
                 local profs   = cloud_browse.profiles
                 local labels  = cloud_browse.labels  or {}
                 local details = cloud_browse.details or {}
                 if #profs == 0 then
-                    render_menu_header('No shared profiles for this class yet — be the first to share one.')
+                    render_menu_header('No shared profiles for this class yet — click Refresh from Server, or be the first to share one.')
                 else
                     render_menu_header(string.format(
                         '%d profile(s) for %s',
                         #profs, tostring(cloud_browse.class or '?')))
                     gui.elements.cloud_browse_combo:render(
                         'Cloud Profile', labels,
-                        'Pick a profile to import.  Listing refreshes automatically on script load and after sharing.')
+                        'Pick a profile to import.  Click Refresh from Server above to pull the latest listing.')
                     -- Detail line for the highlighted entry (full code +
                     -- updated_at).  Combo only shows "name (code)" so the
                     -- entry can stay narrow even with long names; the

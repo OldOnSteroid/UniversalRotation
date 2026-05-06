@@ -212,6 +212,12 @@ local _cloud_browse = {
 -- handle_class_profiles tick refreshes the listing for the new context.
 local _cloud_auto_loaded_class = nil
 
+-- Forward-declare the cloud-listing helpers so handle_profile_io can call
+-- them; the actual definitions live further down next to the other
+-- network-touching code.
+local _auto_load_cloud_listing
+local _refresh_cloud_listing
+
 -- Pre-format combo labels + detail lines from a listing array.  Done
 -- once per fetch so the per-frame render path stays O(1) (see Lua perf
 -- rules).  ASCII-only output (the menu font renders U+2014 as "?").
@@ -643,9 +649,9 @@ local function handle_profile_io()
         local result = cloud_share.share(ck, _active_profile, json, nil)
         if result.ok then
             console.print('[UniversalRotation] Cloud profile updated!  Code: ' .. result.code)
-            -- Force the auto-loader to refetch on the next tick so the
-            -- updated_at on the user's entry refreshes in the picker.
-            _cloud_auto_loaded_class = nil
+            -- Pull the fresh listing (with the bumped updated_at) inline so
+            -- the user sees their own entry move to the top of the picker.
+            _refresh_cloud_listing(ck)
         else
             console.print('[UniversalRotation] Cloud update failed: ' .. tostring(result.error))
         end
@@ -666,16 +672,24 @@ local function handle_profile_io()
         if result.ok then
             console.print('[UniversalRotation] Profile shared!  Code: ' .. result.code
                 .. '  (share this code with others so they can import it)')
-            -- Invalidate so the picker shows the brand-new entry.
-            _cloud_auto_loaded_class = nil
+            -- Refresh the picker so the brand-new entry appears.
+            _refresh_cloud_listing(ck)
         else
             console.print('[UniversalRotation] Cloud share failed: ' .. tostring(result.error))
         end
     end
 
-    -- (Browse Class Profiles button was removed; the listing is now
-    -- auto-loaded by _auto_load_cloud_listing on class detection and
-    -- after a successful share/update.)
+    -- Manual refresh of the cloud listing.  Wired separately so the
+    -- (always-blocking) curl call is exclusively user-triggered, never
+    -- automatic on script start.
+    if gui.elements.cloud_refresh_btn and gui.elements.cloud_refresh_btn:get() then
+        gui.elements.cloud_refresh_btn:set(false)
+        _refresh_cloud_listing(ck)
+    end
+
+    -- (No Browse button; the listing renders from the on-disk cache via
+    -- _auto_load_cloud_listing on class detection.  Server fetches are
+    -- triggered explicitly by Refresh from Server / Share / Update.)
 
     -- Import Selected (in-menu picker) -- downloads the profile the user
     -- highlighted in the cloud_browse_combo and applies it.
@@ -731,22 +745,18 @@ end
 
 local _cloud_ready = false
 
--- One-shot per class: render the on-disk listing cache immediately, then
--- attempt a fresh fetch and update both the live state and the cache.
--- Silent on network failure so a server outage just leaves the cached
--- listing visible.  Blocking (curl is synchronous) -- runs at most once
--- per class change because handle_class_profiles is the only caller and
--- the sentinel guards re-entry.
-local function _auto_load_cloud_listing(ck)
+-- One-shot per class: render the on-disk listing cache immediately on
+-- script load.  No network call here -- io.popen on Windows briefly
+-- flashes a CMD console window because Lua's GUI host doesn't pass
+-- CREATE_NO_WINDOW to the curl child.  We keep the popen out of every
+-- automatic path; the user explicitly refreshes via the Cloud Sharing
+-- "Refresh from Server" button (see _refresh_cloud_listing below).
+_auto_load_cloud_listing = function(ck)
     if not ck or ck == '' then return end
-    -- Skip while the class is unknown (char-select / loading screens) --
-    -- the next on_update tick that resolves the real class will retry.
     if ck == 'unknown' then return end
     if _cloud_auto_loaded_class == ck then return end
     _cloud_auto_loaded_class = ck
 
-    -- Disk cache first so the picker has data to render even if the
-    -- server is unreachable.
     local cached = cloud_share.load_cached_listing(ck)
     if type(cached) == 'table' then
         _apply_cloud_listing(ck, cached, os.time())
@@ -758,13 +768,25 @@ local function _auto_load_cloud_listing(ck)
         _cloud_browse.error      = nil
         _cloud_browse.fetched_at = 0
     end
+end
 
-    -- Attempt fresh fetch.  Failures are intentionally silent here --
-    -- we don't want a server outage to spam the console on every load.
-    local profs = cloud_share.list(ck)
+-- Manual refresh: triggered by the Refresh from Server button (and
+-- after a successful Share / Update so the user sees their own entry
+-- without a script reload).  This is the ONLY place that calls
+-- cloud_share.list, so the io.popen / CMD flash is always tied to a
+-- user-visible action.
+_refresh_cloud_listing = function(ck)
+    if not ck or ck == '' or ck == 'unknown' then return end
+    console.print('[UniversalRotation] Refreshing cloud listing for ' .. ck .. '...')
+    local profs, err = cloud_share.list(ck)
     if type(profs) == 'table' then
         _apply_cloud_listing(ck, profs, os.time())
         cloud_share.save_cached_listing(ck, profs)
+        console.print(string.format(
+            '[UniversalRotation] Cloud listing refreshed (%d profile(s)).',
+            #profs))
+    else
+        console.print('[UniversalRotation] Refresh failed: ' .. tostring(err))
     end
 end
 
