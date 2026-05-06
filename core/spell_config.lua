@@ -73,11 +73,13 @@ local function _get_stack_pri_buff_state(spell_id)
     return st
 end
 
-local function _ensure_stack_pri_buff_combo(e, spell_id)
-    if e.stack_pri_buff_combo then return end
-    local st = _get_stack_pri_buff_state(spell_id)
-    local default_idx = (type(st.buff_hash) == 'number' and st.buff_hash ~= 0) and 1 or 0
-    e.stack_pri_buff_combo = combo_box:new(default_idx, get_hash(key(spell_id, 'stack_pri_buff_combo')))
+local function _ensure_stack_pri_buff_combo(e, spell_id, stored_hash)
+    stored_hash = stored_hash or 0
+    if e.stack_pri_buff_combo and e._sp_buff_hash_for_combo == stored_hash then return end
+    local default_idx = (stored_hash ~= 0) and 1 or 0
+    e.stack_pri_buff_combo = combo_box:new(default_idx, get_hash(key(spell_id, 'stack_pri_buff_combo_' .. stored_hash)))
+    e._sp_buff_hash_for_combo = stored_hash
+    _get_stack_pri_buff_state(spell_id).last_list_sig = nil
 end
 
 local function _get_chain_state(spell_id)
@@ -89,11 +91,27 @@ local function _get_chain_state(spell_id)
     return cs
 end
 
-local function _ensure_buff_combo(e, spell_id)
-    if e.buff_combo then return end
-    local st = _get_buff_state(spell_id)
-    local default_idx = (type(st.buff_hash) == 'number' and st.buff_hash ~= 0) and 1 or 0
-    e.buff_combo = combo_box:new(default_idx, get_hash(key(spell_id, 'buff_combo')))
+local function _ensure_buff_combo(e, spell_id, stored_hash)
+    stored_hash = stored_hash or 0
+    if e.buff_combo and e._buff_hash_for_combo == stored_hash then return end
+    local default_idx = (stored_hash ~= 0) and 1 or 0
+    e.buff_combo = combo_box:new(default_idx, get_hash(key(spell_id, 'buff_combo_' .. stored_hash)))
+    e._buff_hash_for_combo = stored_hash
+    _get_buff_state(spell_id).last_list_sig = nil
+end
+
+local function _ensure_buff_search(e, spell_id)
+    local gen = e._buff_search_gen or 0
+    if e.buff_search and (e._buff_search_gen_at_create == gen) then return end
+    e.buff_search = input_text:new(get_hash(key(spell_id, 'buff_search_' .. gen)))
+    e._buff_search_gen_at_create = gen
+end
+
+local function _clear_buff_search(e)
+    e._buff_search_gen = (e._buff_search_gen or 0) + 1
+    e.buff_search = nil  -- recreated with new hash (no prior state) on next render
+    e._last_search_text = ''
+    e._search_confirmed = false
 end
 
 -- Sentinel ID for virtual evade spell
@@ -126,6 +144,7 @@ local function get_elements(spell_id)
 
         require_buff = checkbox:new(false, get_hash(key(spell_id, 'require_buff'))),
         buff_combo   = nil,
+        buff_search  = nil,
         buff_mode    = combo_box:new(0, get_hash(key(spell_id, 'buff_mode'))),  -- 0=Active, 1=Missing
         buff_stacks  = slider_int:new(1, 50, 1, get_hash(key(spell_id, 'buff_stacks'))),
 
@@ -313,87 +332,138 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
     -- ---- Buff Condition (Require / Missing) ----
     e.require_buff:render('Buff Condition', 'Gate this spell on a buff being active OR missing on you. Use "Missing" mode to cast a spell to apply/refresh a buff.')
     if e.require_buff:get() then
-        _ensure_buff_combo(e, spell_id)
-
         local stored_hash = st.buff_hash or 0
         local stored_name = st.buff_name
         if (not stored_name or stored_name == '') then
             stored_name = _buff_name_cache[tostring(spell_id)] or ''
         end
 
-        -- Build the dropdown list once per spell, then reuse until version bumps
-        if e._buff_list_v ~= _buff_list_version or not e._buff_items then
-            e._buff_items, e._buff_hashes = buff_provider.get_available_buffs_and_missing(stored_hash, stored_name)
-            e._buff_list_v = _buff_list_version
-        end
-        local items, hashes = e._buff_items, e._buff_hashes
+        -- Search input sits directly below the Buff Condition checkbox.
+        -- When non-empty the main buff combo shows search results instead
+        -- of the normal filtered list, so the user can find any buff by
+        -- name without adjusting category filters.
+        _ensure_buff_search(e, spell_id)
+        pcall(function()
+            e.buff_search:render('Search Buffs', 'Type to filter the buff list below by name (searches all categories)', false, '', '')
+        end)
+        local search_text = ''
+        pcall(function() search_text = e.buff_search:get() or '' end)
 
-        local desired_idx = 0
-        if stored_hash ~= 0 then
-            for i = 1, #hashes do
-                if hashes[i] == stored_hash then
-                    desired_idx = i - 1
-                    break
-                end
-            end
+        -- When search text changes, clear confirmed state and force the
+        -- normal-mode sig to re-fire set(desired_idx) on re-entry.
+        if not e._last_search_text then e._last_search_text = '' end
+        if search_text ~= e._last_search_text then
+            e._search_confirmed = false
+            st.last_list_sig = nil
+            e._last_search_text = search_text
         end
 
-        local sig = tostring(desired_idx) .. '|' .. _hash_list_sig(hashes)
-        if st.last_list_sig ~= sig then
-            if type(e.buff_combo.set) == 'function' then
-                pcall(e.buff_combo.set, e.buff_combo, desired_idx)
+        local in_search = (#search_text > 0) and not e._search_confirmed
+
+        if in_search then
+            -- ---- Search mode ----
+            local s_items, s_hashes = buff_provider.search_buffs(search_text)
+
+            -- Tie the combo widget to the exact query string.  Each distinct
+            -- query gets its own hash, so changing the text (including
+            -- backspace) always creates a fresh widget starting at index 0.
+            -- A stale index from a prior query can never auto-apply a wrong buff.
+            local s_combo = combo_box:new(0, get_hash(key(spell_id, 'buff_search_' .. search_text)))
+
+            local cur = s_combo:get()
+            if type(cur) == 'number' and cur >= #s_items then
+                pcall(s_combo.set, s_combo, 0)
             end
-            st.last_list_sig = sig
+            local rok = pcall(function()
+                s_combo:render('Buff', s_items,
+                    'Search results — select a buff to configure it as the buff condition.')
+            end)
+            if not rok then pcall(s_combo.set, s_combo, 0) end
+
+            local sel = s_combo:get()
+            if type(sel) ~= 'number' then sel = 0 end
+            local sel_hash = s_hashes[sel + 1] or 0
+            if sel_hash ~= 0 then
+                local label = tostring(s_items[sel + 1] or ''):gsub('%s*%(Not Active%)%s*$', '')
+                st.buff_hash = sel_hash
+                st.buff_name = label
+                _buff_name_cache[tostring(spell_id)] = label
+                e._buff_items = nil
+                e._buff_hashes = nil
+                e._buff_list_v = nil
+                -- Clear the search box and switch back to normal mode
+                _clear_buff_search(e)
+            end
         else
-            local cur = e.buff_combo:get()
-            if type(cur) == 'number' then
-                local cur_hash = hashes[cur + 1] or 0
-                if cur_hash ~= stored_hash then
-                    if type(e.buff_combo.set) == 'function' then
-                        pcall(e.buff_combo.set, e.buff_combo, desired_idx)
+            -- ---- Normal mode ----
+            -- Combo widget is keyed to the stored buff hash; changing which
+            -- buff is configured creates a fresh widget (no stale persisted index).
+            _ensure_buff_combo(e, spell_id, stored_hash)
+
+            -- get_available_buffs_and_missing always places the saved buff at
+            -- position 2 (index 1, 0-based), making desired_idx a stable invariant.
+            if e._buff_list_v ~= _buff_list_version or not e._buff_items then
+                e._buff_items, e._buff_hashes = buff_provider.get_available_buffs_and_missing(stored_hash, stored_name)
+                e._buff_list_v = _buff_list_version
+            end
+            local items, hashes = e._buff_items, e._buff_hashes
+
+            local desired_idx = 0
+            if stored_hash ~= 0 then
+                for i = 1, #hashes do
+                    if hashes[i] == stored_hash then
+                        desired_idx = i - 1
+                        break
                     end
                 end
             end
-        end
 
-        -- Clamp the widget's idx into [0, #items-1] BEFORE render.  The
-        -- combo-box widget persists its selection across reloads via
-        -- get_hash() -- if the items list has shrunk since the saved
-        -- idx (class change wiped buff history, profile imported with
-        -- a buff hash that's not in history yet, etc.) the widget
-        -- could otherwise hand the host an out-of-range idx and crash
-        -- the game on the C-side render.  Always rendered through pcall
-        -- as belt-and-suspenders; if the host's combo-box code does
-        -- crash, we recover gracefully by forcing idx=0 on the next
-        -- frame.
-        local cur = e.buff_combo:get()
-        if type(cur) == 'number' and cur >= #items then
-            if type(e.buff_combo.set) == 'function' then
+            local sig = tostring(desired_idx) .. '|' .. _hash_list_sig(hashes)
+            if st.last_list_sig ~= sig then
+                if type(e.buff_combo.set) == 'function' then
+                    pcall(e.buff_combo.set, e.buff_combo, desired_idx)
+                end
+                st.last_list_sig = sig
+            else
+                local cur = e.buff_combo:get()
+                if type(cur) == 'number' then
+                    local cur_hash = hashes[cur + 1] or 0
+                    if cur_hash ~= stored_hash then
+                        if type(e.buff_combo.set) == 'function' then
+                            pcall(e.buff_combo.set, e.buff_combo, desired_idx)
+                        end
+                    end
+                end
+            end
+
+            local cur = e.buff_combo:get()
+            if type(cur) == 'number' and cur >= #items then
+                if type(e.buff_combo.set) == 'function' then
+                    pcall(e.buff_combo.set, e.buff_combo, 0)
+                end
+            end
+            local rok = pcall(function()
+                e.buff_combo:render('Buff', items,
+                    'Buff must be active on you to cast. Previously seen buffs are retained even when inactive.')
+            end)
+            if not rok and type(e.buff_combo.set) == 'function' then
                 pcall(e.buff_combo.set, e.buff_combo, 0)
             end
-        end
-        local rok = pcall(function ()
-            e.buff_combo:render('Buff', items,
-                'Buff must be active on you to cast. Previously seen buffs are retained even when inactive.')
-        end)
-        if not rok and type(e.buff_combo.set) == 'function' then
-            pcall(e.buff_combo.set, e.buff_combo, 0)
-        end
 
-        local sel = e.buff_combo:get()
-        if type(sel) ~= 'number' then sel = 0 end
-        local sel_hash = hashes[sel + 1] or 0
+            local sel = e.buff_combo:get()
+            if type(sel) ~= 'number' then sel = 0 end
+            local sel_hash = hashes[sel + 1] or 0
 
-        st.buff_hash = sel_hash
+            st.buff_hash = sel_hash
 
-        if sel_hash ~= 0 then
-            local label = items[sel + 1] or ''
-            -- Strip status tags to store the clean name
-            label = tostring(label)
-                :gsub('%s*%(Not Active%)%s*$', '')
-                :gsub('%s*%(missing%)%s*$', '')
-            _buff_name_cache[tostring(spell_id)] = label
-            st.buff_name = label
+            if sel_hash ~= 0 then
+                local label = items[sel + 1] or ''
+                label = tostring(label)
+                    :gsub('%s*%(Not Active%)%s*$', '')
+                    :gsub('%s*%(missing%)%s*$', '')
+                _buff_name_cache[tostring(spell_id)] = label
+                st.buff_name = label
+            end
         end
 
         e.buff_mode:render('Mode', { 'Active (have buff)', 'Missing (need buff)' },
@@ -448,10 +518,9 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
         if e.stack_pri_use_buff:get() then
             -- Buff-based: show buff picker and target stacks slider
             local sps = _get_stack_pri_buff_state(spell_id)
-            _ensure_stack_pri_buff_combo(e, spell_id)
-
             local stored_hash = sps.buff_hash or 0
             local stored_name = sps.buff_name or ''
+            _ensure_stack_pri_buff_combo(e, spell_id, stored_hash)
 
             -- Build once per version bump, then reuse
             if e._sp_buff_list_v ~= _buff_list_version or not e._sp_buff_items then
@@ -661,7 +730,9 @@ function spell_config.apply(spell_id, cfg)
     do
         local sps = _get_stack_pri_buff_state(spell_id)
         if type(cfg.stack_pri_buff_hash) == 'number' then sps.buff_hash = cfg.stack_pri_buff_hash end
-        if type(cfg.stack_pri_buff_name) == 'string' then sps.buff_name = cfg.stack_pri_buff_name end
+        if type(cfg.stack_pri_buff_name) == 'string' then
+            sps.buff_name = cfg.stack_pri_buff_name:gsub('%s*%(Not Active%).*$', ''):match('^%s*(.-)%s*$') or cfg.stack_pri_buff_name
+        end
         sps.last_list_sig = nil
         e.stack_pri_buff_combo = nil
     end
@@ -683,24 +754,27 @@ function spell_config.apply(spell_id, cfg)
     end
 
     if type(cfg.buff_hash) == 'number' then st.buff_hash = cfg.buff_hash end
-    if type(cfg.buff_name) == 'string' then st.buff_name = cfg.buff_name end
-    if type(cfg.buff_name) == 'string' and cfg.buff_name ~= '' then
-        _buff_name_cache[tostring(spell_id)] = cfg.buff_name
+    if type(cfg.buff_name) == 'string' then
+        local clean = cfg.buff_name:gsub('%s*%(Not Active%).*$', ''):match('^%s*(.-)%s*$') or cfg.buff_name
+        st.buff_name = clean
+        if clean ~= '' then _buff_name_cache[tostring(spell_id)] = clean end
     end
 
     -- Restore chain state
     if type(cfg.chain_target_id) == 'number' then cs.target_id = cfg.chain_target_id end
 
     st.last_list_sig = nil
-    e.buff_combo  = nil
-    e.chain_combo = nil  -- will be rebuilt lazily with fresh spell list
+    e.buff_combo          = nil
+    e._buff_hash_for_combo = nil
+    e.chain_combo         = nil  -- will be rebuilt lazily with fresh spell list
 
     -- Profile load changed the saved buff selection; force buff lists to rebuild
     -- once on the next render so the saved buff appears in the dropdown.
-    e._buff_items     = nil
-    e._sp_buff_items  = nil
-    e._buff_list_v    = nil
-    e._sp_buff_list_v = nil
+    e._buff_items          = nil
+    e._sp_buff_items       = nil
+    e._buff_list_v         = nil
+    e._sp_buff_list_v      = nil
+    e._sp_buff_hash_for_combo = nil
 end
 
 function spell_config.is_virtual(spell_id)
