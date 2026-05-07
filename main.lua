@@ -120,11 +120,12 @@ local function update_settings()
     settings.overlay_show_buffs = gui.elements.overlay_show_buffs and gui.elements.overlay_show_buffs:get() or false
     settings.allow_movement     = gui.elements.allow_movement and gui.elements.allow_movement:get() or false
     settings.respect_orb        = should_respect_orbwalker()
-    -- See gui.lua's warmachine_override checkbox tooltip.  When ON,
-    -- rotation_engine treats _G.WARMACHINE_TARGET as authoritative --
-    -- no fallback to UR's own target_selector when it's nil/invalid.
-    settings.warmachine_override = gui.elements.warmachine_override
-        and gui.elements.warmachine_override:get() or false
+    -- See gui.lua's external_target_override checkbox tooltip.  When
+    -- ON, rotation_engine treats _G.EXTERNAL_ROTATION_TARGET as
+    -- authoritative -- no fallback to UR's own target_selector when
+    -- it's nil/invalid.
+    settings.external_target_override = gui.elements.external_target_override
+        and gui.elements.external_target_override:get() or false
     -- True while the user is actively hold-casting; rotation_engine uses this to
     -- suppress cursor warps and pathfinder moves so manual movement input wins.
     settings.hold_active        = gui.elements.use_hold_key and gui.elements.use_hold_key:get() and _hold_key_active or false
@@ -1141,3 +1142,39 @@ end)
 on_render(function()
     render_overlay()
 end)
+
+-- ---------------------------------------------------------------------------
+-- Public global API.  External plugins (Gem Farmer, WarMachine, etc.) can
+-- toggle the External Target Override programmatically without reaching into
+-- UR's gui internals.  When ON, UR ONLY casts at _G.EXTERNAL_ROTATION_TARGET
+-- (no fallback to its own picker, holds fire when the global is nil).
+--
+-- Typical usage from another plugin:
+--
+--   if UniversalRotationPlugin then
+--       local prev = UniversalRotationPlugin.get_external_target_override()
+--       UniversalRotationPlugin.set_external_target_override(true)
+--       -- ... do bot work, write _G.EXTERNAL_ROTATION_TARGET ...
+--       UniversalRotationPlugin.set_external_target_override(prev)
+--   end
+--
+-- Setters are a no-op if the gui hasn't initialized the element yet (won't
+-- happen in practice because the element is created at module load).
+-- ---------------------------------------------------------------------------
+UniversalRotationPlugin = {
+    set_external_target_override = function (enabled)
+        if gui.elements.external_target_override then
+            gui.elements.external_target_override:set(enabled and true or false)
+        end
+    end,
+    get_external_target_override = function ()
+        if gui.elements.external_target_override then
+            return gui.elements.external_target_override:get()
+        end
+        return false
+    end,
+    is_enabled = function ()
+        if gui.elements.enabled then return gui.elements.enabled:get() end
+        return false
+    end,
+}

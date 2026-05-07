@@ -709,15 +709,16 @@ function rotation_engine.tick(equipped_ids, settings)
         logger.log(string.format('eval: %s (id=%s pri=%d eff=%d method=%d)',
             spell_name, tostring(spell_id), cfg.priority, entry.eff_pri, cfg.cast_method or 0))
 
-        -- Cross-plugin TRAVEL MODE: when WarMachine signals it's in a
-        -- movement / interaction phase (no enemy in melee range), only
-        -- self-cast spells fire.  Defensives, buffs, and player-AoE
-        -- continue to cycle; offensive targeted spells are suppressed
-        -- so we don't blow CDs and resources on stragglers we're walking
-        -- past.  Contract is a single global; see WarMachine/core/
-        -- rotation_bridge.lua.  No-op when WarMachine isn't loaded.
-        if _G.WARMACHINE_TRAVEL_MODE and not cfg.self_cast then
-            logger.log('  SKIP: WARMACHINE_TRAVEL_MODE + non-self-cast')
+        -- Cross-plugin TRAVEL MODE: when an external plugin signals
+        -- it's in a movement / interaction phase (no enemy in melee
+        -- range), only self-cast spells fire.  Defensives, buffs, and
+        -- player-AoE continue to cycle; offensive targeted spells are
+        -- suppressed so we don't blow CDs and resources on stragglers
+        -- we're walking past.  Contract is a single global; see e.g.
+        -- WarMachine/core/rotation_bridge.lua.  No-op when no external
+        -- plugin sets the flag.
+        if _G.EXTERNAL_ROTATION_TRAVEL_MODE and not cfg.self_cast then
+            logger.log('  SKIP: EXTERNAL_ROTATION_TRAVEL_MODE + non-self-cast')
             goto next_spell
         end
 
@@ -882,28 +883,29 @@ function rotation_engine.tick(equipped_ids, settings)
         do
             local spell_range = cfg.range or range
 
-            -- Cross-plugin TARGET HINT: if WarMachine has set a kill
-            -- target via _G.WARMACHINE_TARGET, prefer it over our own
-            -- target_selector pick.  This keeps cast-target alignment
-            -- with WarMachine's walk target -- when WarMachine is
-            -- engaging a 30y Soulspire / BSK structure / elite, we cast
-            -- at THAT instead of the closest white mob, and orbwalker's
-            -- cursor stays on the structure rather than yanking us back
-            -- toward chaff.
+            -- Cross-plugin TARGET HINT: if an external plugin has set
+            -- a kill target via _G.EXTERNAL_ROTATION_TARGET, prefer it
+            -- over our own target_selector pick.  This keeps cast-
+            -- target alignment with the plugin's walk target -- when
+            -- the plugin is engaging a 30y Soulspire / BSK structure /
+            -- elite / boss, we cast at THAT instead of the closest
+            -- white mob, and orbwalker's cursor stays on the chosen
+            -- target rather than yanking us back toward chaff.
             --
             -- Two modes:
-            --   * HINT mode (settings.warmachine_override == false):
+            --   * HINT mode (settings.external_target_override == false):
             --     hint is preferred; falls back to UR's own picker
             --     when the hint is nil / dead / out of range.
-            --   * OVERRIDE mode (settings.warmachine_override == true):
+            --   * OVERRIDE mode (settings.external_target_override == true):
             --     hint is AUTHORITATIVE.  No fallback -- if the hint
             --     is nil or invalid, this spell SKIPS this tick.
-            --     Used by the WarMachine activity model where combat
-            --     is priority 3 -- the bot only fights when WarMachine
-            --     decides a mob is "interfering," and must hold fire
-            --     during pure-nav phases.
+            --     Used by the WarMachine activity model and Gem Farmer
+            --     where combat is gated by the external plugin -- the
+            --     bot only fights when the plugin decides a mob is
+            --     "interfering," and must hold fire during pure-nav
+            --     phases.
             local target = nil
-            local hint = _G.WARMACHINE_TARGET
+            local hint = _G.EXTERNAL_ROTATION_TARGET
             if hint then
                 local valid = true
                 if hint.is_dead then
@@ -929,19 +931,19 @@ function rotation_engine.tick(equipped_ids, settings)
                 end
                 if valid then
                     target = hint
-                    logger.log('  using WARMACHINE_TARGET hint')
+                    logger.log('  using EXTERNAL_ROTATION_TARGET hint')
                 end
             end
 
             if not target then
-                if settings.warmachine_override then
-                    -- Override mode: NO fallback.  WarMachine has
-                    -- decided the bot should not engage anyone right
-                    -- now (hint nil or invalid), so we hold fire.
+                if settings.external_target_override then
+                    -- Override mode: NO fallback.  The external plugin
+                    -- has decided the bot should not engage anyone
+                    -- right now (hint nil or invalid), so we hold fire.
                     -- This is what enforces "kill only when
-                    -- interfering" -- WarMachine clears the target
+                    -- interfering" -- the plugin clears the target
                     -- during pure navigation, so UR stays quiet.
-                    logger.log('  SKIP: warmachine_override on, no valid hint')
+                    logger.log('  SKIP: external_target_override on, no valid hint')
                     goto next_spell
                 end
                 target = target_selector.pick_target(targets, cfg, player_pos, spell_range)
