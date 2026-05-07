@@ -18,6 +18,53 @@ local _chain_boosts = {}   -- keyed by target spell_id (number)
 -- Channeled spells: [spell_id] = vk_code currently held down
 local _channeled_held = {}
 
+-- Co-existence with the host's auto-dodge plugin (the `evade` global --
+-- HordeDev / EvadeRevamped / Paladin-style dodgers all hook into it).
+--
+-- The conflict that motivated this debounce: UR's "Virtual Evade" sends
+-- a keypress (typically Space) which D4 routes to the player's bound
+-- evade.  The host's auto-dodge calls cast_spell.position(337031, ...)
+-- with a safe target.  Without coordination both can fire within one
+-- frame -- the player dashes once for UR, then re-dashes for the host,
+-- in opposite directions, looking like a stutter.
+--
+-- Bi-directional fix:
+--   * Outbound: when WE fire UR's virtual evade, call evade.set_pause()
+--     so the host won't fire its auto-dodge immediately on top of us.
+--   * Inbound: track the last time we observed is_dangerous_position;
+--     skip UR's virtual evade for HOST_DODGE_DEFERENCE_S after that to
+--     give the host's auto-dodge a clean window without UR piling on.
+--
+-- The deference window also covers the post-dodge safe-position frame,
+-- where can_act() unblocks (no longer dangerous) but the host's dash
+-- animation is still resolving.
+local HOST_DODGE_DEFERENCE_S = 0.6
+local _last_danger_t         = -math.huge
+
+-- Pulse helper -- called once per tick by `tick()` so the gate below
+-- has the most-recent observation.  Safe-no-op when the `evade` global
+-- isn't loaded (no auto-dodge plugin installed).
+local function _refresh_danger_observation(player_pos)
+    if not evade or not evade.is_dangerous_position or not player_pos then return end
+    local ok, danger = pcall(evade.is_dangerous_position, player_pos)
+    if ok and danger then
+        _last_danger_t = get_time_since_inject() or 0
+    end
+end
+
+local function _host_recently_dodged()
+    return (get_time_since_inject() or 0) - _last_danger_t < HOST_DODGE_DEFERENCE_S
+end
+
+-- Notify host to pause auto-dodge for the next casting window.  Called
+-- right after UR's virtual evade fires so the host doesn't fire ITS
+-- evade on top of ours.  No-op when the host plugin isn't loaded.
+local function _yield_to_us(seconds)
+    if evade and evade.set_pause then
+        pcall(evade.set_pause, seconds or 0.4)
+    end
+end
+
 local function _release_all_channeled()
     for spell_id, vk in pairs(_channeled_held) do
         pcall(function() utility.send_key_up(vk) end)
@@ -585,6 +632,11 @@ end
 function rotation_engine.tick(equipped_ids, settings)
     if not can_act() then
         _release_all_channeled()
+        -- Even though we're not casting, refresh the danger observation
+        -- so the post-dodge deference window is anchored at the LAST
+        -- dangerous frame -- not the frame the rotation resumed.
+        local lp = get_local_player()
+        if lp then _refresh_danger_observation(lp:get_position()) end
         return false
     end
 
@@ -593,6 +645,10 @@ function rotation_engine.tick(equipped_ids, settings)
     local lp         = get_local_player()
     local player_pos = lp:get_position()
     local range      = settings.scan_range or _scan_range
+
+    -- Refresh the host-dodge observation once per tick so the
+    -- virtual-evade gate below works on fresh data.
+    _refresh_danger_observation(player_pos)
 
     local targets = target_selector.get_targets(player_pos, range)
 
@@ -708,6 +764,16 @@ function rotation_engine.tick(equipped_ids, settings)
         local spell_name = is_virtual and 'Evade' or (entry.name or tostring(spell_id))
         logger.log(string.format('eval: %s (id=%s pri=%d eff=%d method=%d)',
             spell_name, tostring(spell_id), cfg.priority, entry.eff_pri, cfg.cast_method or 0))
+
+        -- Virtual evade defers to the host's auto-dodge plugin (if any).
+        -- When _last_danger_t is recent enough, skip our virtual evade
+        -- so we don't pile a Spacebar press on top of the host's
+        -- cast_spell.position dodge -- the user-reported "evade fights
+        -- evade" stutter.  Real spells are unaffected.
+        if is_virtual and _host_recently_dodged() then
+            logger.log('  SKIP: virtual evade yielding to host auto-dodge')
+            goto next_spell
+        end
 
         -- Cross-plugin TRAVEL MODE: when an external plugin signals
         -- it's in a movement / interaction phase (no enemy in melee
@@ -846,6 +912,10 @@ function rotation_engine.tick(equipped_ids, settings)
                     console.print(string.format('[UniversalRota] Self-Cast: %s (id=%s pri=%d eff=%d%s)',
                         entry.name, tostring(spell_id), cfg.priority, entry.eff_pri, METHOD_TAGS[cast_method] or ''))
                 end
+                -- Virtual evade just fired -- ask the host to hold off
+                -- its auto-dodge for the cast window.  See the
+                -- HOST_DODGE_DEFERENCE_S comment near the top.
+                if is_virtual then _yield_to_us(0.4) end
                 return true
             end
             goto next_spell
