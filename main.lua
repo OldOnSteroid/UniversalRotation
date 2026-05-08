@@ -12,6 +12,10 @@ local logger          = require 'core.logger'
 -- Start file logger immediately
 logger.enable()
 
+-- Always start enabled regardless of any persisted checkbox state.
+-- Game crashes wipe widget state, so the saved value can be stale/false.
+if gui.elements.enabled then gui.elements.enabled:set(true) end
+
 -- Sanitize a spell config loaded from JSON.
 -- Fixes the crash where require_buff=true but no buff is actually defined
 -- (buff_hash=0 AND buff_name=''), which causes a dead buff condition that
