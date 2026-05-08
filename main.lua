@@ -1115,6 +1115,100 @@ local function _observe_buffs_throttled()
     end
 end
 
+-- ── Global plugin API ─────────────────────────────────────────────────────────
+-- Other scripts can call these via _G.UNIVERSAL_ROTATION.<fn>()
+-- Example: _G.UNIVERSAL_ROTATION.set_enabled(true)
+_G.UNIVERSAL_ROTATION = {
+
+    -- ---- Toggle ----
+    set_enabled = function(value)
+        if gui.elements.enabled then gui.elements.enabled:set(value and true or false) end
+    end,
+    get_enabled = function()
+        return gui.elements.enabled and gui.elements.enabled:get() or false
+    end,
+
+    -- ---- Profile management ----
+    get_active_profile = function()
+        return _active_profile
+    end,
+    get_profile_names = function()
+        local out = {}
+        for i, n in ipairs(_profile_names) do out[i] = n end
+        return out
+    end,
+    set_profile = function(name)
+        _switch_profile(name)
+    end,
+    save_profile = function()
+        _export_profile()
+    end,
+    load_profile = function()
+        _import_profile(nil, _active_profile, false)
+    end,
+
+    -- ---- Class / spell info ----
+    get_class_key = function()
+        return _class_key()
+    end,
+    get_equipped_spell_ids = function()
+        local out = {}
+        for i, id in ipairs(equipped_ids) do out[i] = id end
+        return out
+    end,
+
+    -- ---- Global settings ----
+    get_scan_range = function()
+        return gui.elements.scan_range and gui.elements.scan_range:get() or settings.scan_range
+    end,
+    set_scan_range = function(value)
+        if gui.elements.scan_range then gui.elements.scan_range:set(tonumber(value) or 16.0) end
+    end,
+
+    get_anim_delay = function()
+        return gui.elements.anim_delay and gui.elements.anim_delay:get() or settings.anim_delay
+    end,
+    set_anim_delay = function(value)
+        if gui.elements.anim_delay then gui.elements.anim_delay:set(tonumber(value) or 0.05) end
+    end,
+
+    get_global_min_enemies = function()
+        return gui.elements.global_min_enemies and gui.elements.global_min_enemies:get() or settings.global_min_enemies
+    end,
+    set_global_min_enemies = function(value)
+        if gui.elements.global_min_enemies then gui.elements.global_min_enemies:set(math.max(0, math.floor(tonumber(value) or 0))) end
+    end,
+
+    get_debug = function()
+        return gui.elements.debug_mode and gui.elements.debug_mode:get() or false
+    end,
+    set_debug = function(value)
+        if gui.elements.debug_mode then gui.elements.debug_mode:set(value and true or false) end
+    end,
+
+    get_respect_orb = function()
+        return gui.elements.respect_orb and gui.elements.respect_orb:get() or false
+    end,
+    set_respect_orb = function(value)
+        if gui.elements.respect_orb then gui.elements.respect_orb:set(value and true or false) end
+    end,
+
+    get_allow_movement = function()
+        return gui.elements.allow_movement and gui.elements.allow_movement:get() or false
+    end,
+    set_allow_movement = function(value)
+        if gui.elements.allow_movement then gui.elements.allow_movement:set(value and true or false) end
+    end,
+
+    get_warmachine_override = function()
+        return gui.elements.warmachine_override and gui.elements.warmachine_override:get() or false
+    end,
+    set_warmachine_override = function(value)
+        if gui.elements.warmachine_override then gui.elements.warmachine_override:set(value and true or false) end
+    end,
+}
+-- ─────────────────────────────────────────────────────────────────────────────
+
 on_update(function()
     handle_class_profiles()
     refresh_equipped()
