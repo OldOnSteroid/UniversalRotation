@@ -36,6 +36,8 @@ UniversalRotation/
 │   ├── buff_provider.lua     # Buff detection, name remapping, history persistence
 │   ├── cloud_share.lua       # Cloud sharing client (HTTP + on-disk listing cache)
 │   └── profile_io.lua        # JSON serialization (pure Lua)
+├── API.md                    # _G.UNIVERSAL_ROTATION plugin API reference
+├── openapi.yaml              # OpenAPI 3.1 spec for the cloud share server
 └── *.json                    # Class profiles (auto-created per class/profile)
 ```
 
@@ -174,10 +176,43 @@ Bosses and Champions bypass **all** minimum enemy requirements (both global and 
 | 3 | Rogue |
 | 6 | Necromancer |
 | 7 | Spiritborn |
-| 8 | Warlock* |
+| 8 | Warlock |
 | 9 | Paladin |
 
-*\*Warlock is not yet active in-game but is pre-mapped for future support.*
+## Plugin API
+
+Other scripts (e.g. WarMachine activities) can control UR at runtime through the `_G.UNIVERSAL_ROTATION` global table.  Full reference in [API.md](API.md).
+
+**Quick reference:**
+
+```lua
+local UR = _G.UNIVERSAL_ROTATION
+if not UR then return end
+
+-- Toggle
+UR.set_enabled(true)
+UR.get_enabled()                -- → boolean
+
+-- Profiles
+UR.get_active_profile()         -- → "Default"
+UR.get_profile_names()          -- → { "Default", "Boss Farmer", ... }
+UR.set_profile("Boss Farmer")
+UR.save_profile()
+UR.load_profile()
+
+-- Info
+UR.get_class_key()              -- → "warlock", "sorcerer", etc.
+UR.get_equipped_spell_ids()     -- → { 12345, 67890, ... }
+
+-- Settings (all have matching get_* counterparts)
+UR.set_scan_range(20.0)
+UR.set_anim_delay(0.05)
+UR.set_global_min_enemies(3)
+UR.set_respect_orb(true)
+UR.set_allow_movement(false)
+UR.set_warmachine_override(true)
+UR.set_debug(false)
+```
 
 ## How It Works
 
