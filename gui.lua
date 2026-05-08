@@ -44,7 +44,7 @@ gui.VIRTUAL_EVADE_ID = 999999999
 
 gui.elements = {
     main_tree      = tree_node:new(0),
-    enabled        = cb(false, 'enabled'),
+    enabled        = cb(true, 'enabled'),
     use_keybind    = cb(false, 'use_keybind'),
     keybind        = keybind:new(0x0A, true, get_hash(plugin_label .. '_keybind')),
 
