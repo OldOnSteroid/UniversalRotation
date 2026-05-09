@@ -650,7 +650,15 @@ function rotation_engine.tick(equipped_ids, settings)
     -- virtual-evade gate below works on fresh data.
     _refresh_danger_observation(player_pos)
 
-    local targets = target_selector.get_targets(player_pos, range)
+    -- Hold Location: scan enemies from the pinned point at the hold radius so
+    -- only targets inside the hold circle are considered for targeting.
+    local scan_center = player_pos
+    local scan_r      = range
+    if settings.hold_location_enabled and settings.hold_location_pos then
+        scan_center = settings.hold_location_pos
+        scan_r      = settings.hold_location_range or 15.0
+    end
+    local targets = target_selector.get_targets(scan_center, scan_r)
 
     local spell_list = {}
     for _, spell_id in ipairs(equipped_ids) do

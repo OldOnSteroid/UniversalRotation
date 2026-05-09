@@ -1,5 +1,5 @@
 local plugin_label   = 'magoogles_universal_rotation'
-local plugin_version = '1.0.15'
+local plugin_version = '1.0.16'
 console.print('Lua Plugin - Magoogles Universal Rotation - v' .. plugin_version)
 
 local gui = {}
@@ -140,6 +140,12 @@ gui.elements = {
     cloud_import_code         = input_text:new(get_hash(plugin_label .. '_cloud_import_code')),
     cloud_import_code_btn     = cb(false, 'cloud_import_code_btn'),
 
+    -- Hold Location
+    hold_location_tree    = tree_node:new(1),
+    hold_location_enabled = cb(false, 'hold_location_enabled'),
+    hold_location_range   = sf(3.0, 60.0, 15.0, 'hold_location_range'),
+    hold_location_set_btn = cb(false, 'hold_location_set_btn'),
+
     -- Buff filter checkboxes (controls which categories appear in buff dropdowns)
     buff_filter_tree    = tree_node:new(2),
     bf_paragon          = cb(false, 'bf_paragon'),
@@ -156,7 +162,7 @@ gui.elements = {
 --   profiles is the array returned by cloud_share.list (each entry has
 --   code, name, updated_at).  nil = never fetched.  Empty array = fetched
 --   and the server had nothing for this class.
-gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, active_profile, cloud_info, cloud_browse)
+gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, active_profile, cloud_info, cloud_browse, hold_info)
     if not gui.elements.main_tree:push('Magoogles Universal Rotation | v' .. plugin_version) then return end
 
     gui.elements.enabled:render('Enable', 'Enable the universal rotation')
@@ -289,6 +295,18 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
             gui.elements.overlay_x:render('Overlay X', 'Overlay left position (px)', 1)
             gui.elements.overlay_y:render('Overlay Y', 'Overlay top position (px)', 1)
             gui.elements.overlay_show_buffs:render('Show Active Buff List', 'Show active buffs in the overlay')
+        end
+
+        -- Hold Location
+        if gui.elements.hold_location_tree:push('Hold Location') then
+            render_menu_header('Pin the character to a fixed point. Enemies outside the radius are ignored; the character auto-returns if it drifts out.')
+            gui.elements.hold_location_enabled:render('Enable Hold Location', 'Lock combat to a radius around a fixed point in the world')
+            gui.elements.hold_location_range:render('Hold Radius (yds)', 'Enemies outside this circle are ignored; player returns here if pushed out', 1)
+            gui.elements.hold_location_set_btn:render('Set Position Here', 'Capture the current player position as the hold point (also auto-captured when first enabled)')
+            if type(hold_info) == 'table' and hold_info.label then
+                render_menu_header(hold_info.label)
+            end
+            gui.elements.hold_location_tree:pop()
         end
 
         -- Buff dropdown filters

@@ -133,6 +133,9 @@ local function update_settings()
     -- True while the user is actively hold-casting; rotation_engine uses this to
     -- suppress cursor warps and pathfinder moves so manual movement input wins.
     settings.hold_active        = gui.elements.use_hold_key and gui.elements.use_hold_key:get() and _hold_key_active or false
+    settings.hold_location_enabled = gui.elements.hold_location_enabled and gui.elements.hold_location_enabled:get() or false
+    settings.hold_location_range   = gui.elements.hold_location_range   and gui.elements.hold_location_range:get()   or 15.0
+    settings.hold_location_pos     = _hold_pos
     rotation_engine.set_scan_range(settings.scan_range)
 
     -- Sync buff dropdown filters to buff_provider
@@ -219,6 +222,10 @@ end
 local _profile_names  = {}   -- ordered list of profile names for current class
 local _active_profile = 'Default'
 local _last_profile_idx = nil  -- tracks combo selection to detect switches
+
+-- Hold Location state (runtime only — not persisted to profile)
+local _hold_pos         = nil   -- vec3 of pinned position; nil = not yet set
+local _hold_loc_prev_en = false -- previous enabled state for rising-edge detect
 
 -- Cached result of the last cloud listing fetch (auto-loaded on class
 -- detection; refreshed after a successful share/upload).  Drives the
@@ -896,6 +903,41 @@ local function handle_profile_io()
             end
         end
     end
+
+    -- ---- Hold Location ----
+    local hl_en = gui.elements.hold_location_enabled and gui.elements.hold_location_enabled:get() or false
+
+    -- Rising edge: auto-capture position the moment the user enables it (if not already set)
+    if hl_en and not _hold_loc_prev_en and not _hold_pos then
+        local lp2 = get_local_player()
+        if lp2 then
+            local ok2, pos2 = pcall(function() return lp2:get_position() end)
+            if ok2 and pos2 then
+                _hold_pos = pos2
+                console.print('[UniversalRotation] Hold location auto-set to current position')
+            end
+        end
+    end
+
+    -- Falling edge: clear the stored position when disabled
+    if not hl_en and _hold_loc_prev_en then
+        _hold_pos = nil
+    end
+
+    _hold_loc_prev_en = hl_en
+
+    -- Manual "Set Position Here" button
+    if gui.elements.hold_location_set_btn and gui.elements.hold_location_set_btn:get() then
+        local lp2 = get_local_player()
+        if lp2 then
+            local ok2, pos2 = pcall(function() return lp2:get_position() end)
+            if ok2 and pos2 then
+                _hold_pos = pos2
+                console.print('[UniversalRotation] Hold location pinned to current position')
+            end
+        end
+        gui.elements.hold_location_set_btn:set(false)
+    end
 end
 
 local _cloud_ready = false
@@ -1276,6 +1318,24 @@ on_update(function()
     if not lp then return end
     if lp:is_dead() then return end
 
+    -- Hold Location: if the player has drifted outside the hold circle,
+    -- move them back and skip the rotation this tick.
+    if settings.hold_location_enabled and settings.hold_location_pos then
+        local ok_pos, lp_pos = pcall(function() return lp:get_position() end)
+        if ok_pos and lp_pos then
+            local r = settings.hold_location_range or 15.0
+            local ok_d, d2 = pcall(function()
+                return lp_pos:squared_dist_to_ignore_z(settings.hold_location_pos)
+            end)
+            if ok_d and d2 and d2 > r * r then
+                if pathfinder and type(pathfinder.request_move) == 'function' then
+                    pcall(pathfinder.request_move, settings.hold_location_pos)
+                end
+                return
+            end
+        end
+    end
+
     local ok, err = pcall(rotation_engine.tick, equipped_ids, settings)
     if not ok then
         console.print('[UniversalRotation] rotation_engine.tick error: ' .. tostring(err))
@@ -1284,7 +1344,16 @@ end)
 
 on_render_menu(function()
     local cloud_info = cloud_share.get_share_info(_class_key(), _active_profile)
-    gui.render(spell_config, equipped_ids, all_known_ids, _profile_names, _active_profile, cloud_info, _cloud_browse)
+    local hold_info  = nil
+    if _hold_pos then
+        local ok, x, y = pcall(function()
+            return _hold_pos:x(), _hold_pos:y()
+        end)
+        if ok and x then
+            hold_info = { label = string.format('Pinned: %.1f, %.1f', x, y) }
+        end
+    end
+    gui.render(spell_config, equipped_ids, all_known_ids, _profile_names, _active_profile, cloud_info, _cloud_browse, hold_info)
 end)
 
 on_render(function()
