@@ -507,33 +507,23 @@ local function _export_profile(class_key, profile_name)
 end
 
 -- Apply a parsed profile data table to the current session.
--- skip_ui_globals=true applies rotation-relevant globals (scan range,
--- anim delay, min enemies) but skips personal UI settings (overlay
--- position, debug mode).  Used for cloud imports so the uploader's
--- rotation tuning takes effect while the downloader keeps their own
--- screen layout.  Local profile switches pass skip_ui_globals=false
--- to apply all globals.
-local function _apply_profile_data(data, display_name, silent, skip_ui_globals)
+-- skip_globals=true skips ALL global settings and only applies per-spell
+-- configs.  Used for profile switches so the user's scan range, overlay
+-- position, and other Global Settings stay fixed regardless of which
+-- profile is active.  Startup and explicit reloads pass skip_globals=false
+-- to fully restore a saved state from disk.
+local function _apply_profile_data(data, display_name, silent, skip_globals)
     if type(data) ~= 'table' then return false end
 
-    if type(data.global) == 'table' then
-        -- Rotation globals: always apply — these are authored rotation
-        -- intent (scan range, cast delay, enemy thresholds) and must
-        -- match the uploader's tuning for the profile to work as designed.
+    if type(data.global) == 'table' and not skip_globals then
         _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, data.global.scan_range)
         _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  data.global.anim_delay)
         _apply_global_slider('global_min_enemies', slider_int,   0,   15,   data.global.global_min_enemies)
-
-        if not skip_ui_globals then
-            -- UI globals: only for local profile switches where the user
-            -- owns all settings.  Cloud imports skip these because overlay
-            -- position is screen-size-dependent and debug mode is a dev pref.
-            _set_element(gui.elements.debug_mode,         data.global.debug_mode)
-            _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
-            _apply_global_slider('overlay_x',          slider_int,   0,   3000, data.global.overlay_x)
-            _apply_global_slider('overlay_y',          slider_int,   0,   3000, data.global.overlay_y)
-            _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
-        end
+        _set_element(gui.elements.debug_mode,         data.global.debug_mode)
+        _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
+        _apply_global_slider('overlay_x',          slider_int,   0,   3000, data.global.overlay_x)
+        _apply_global_slider('overlay_y',          slider_int,   0,   3000, data.global.overlay_y)
+        _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
     end
 
     if type(data.buff_history) == 'table' then
@@ -560,7 +550,7 @@ local function _apply_profile_data(data, display_name, silent, skip_ui_globals)
     return true
 end
 
-local function _import_profile(class_key, profile_name, silent)
+local function _import_profile(class_key, profile_name, silent, skip_globals)
     class_key    = class_key    or _class_key()
     profile_name = profile_name or _active_profile
 
@@ -583,7 +573,7 @@ local function _import_profile(class_key, profile_name, silent)
         return false
     end
 
-    return _apply_profile_data(data, profile_name, silent)
+    return _apply_profile_data(data, profile_name, silent, skip_globals)
 end
 
 -- Import a profile directly from a JSON string (e.g. downloaded from cloud).
@@ -626,9 +616,16 @@ local function _import_from_json(json_str, profile_name)
     _save_manifest(class_key)
     _last_profile_idx = _get_active_profile_index()
     _set_element(gui.elements.profile_combo, _last_profile_idx)
-    -- Cloud imports apply rotation globals (scan range, anim delay, min
-    -- enemies) but skip UI globals (overlay position, debug mode) which
-    -- are personal/screen-dependent.  All per-spell settings are applied.
+    -- Cloud imports apply rotation globals (scan range, anim delay, min enemies)
+    -- from the uploader's profile so the rotation behaviour matches their design,
+    -- but skip UI globals (overlay position, debug mode) which are personal and
+    -- screen-size-dependent.  Per-spell settings are applied via skip_globals=true
+    -- inside _apply_profile_data, so the inline block below handles only globals.
+    if type(data.global) == 'table' then
+        _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, data.global.scan_range)
+        _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  data.global.anim_delay)
+        _apply_global_slider('global_min_enemies', slider_int,   0,   15,   data.global.global_min_enemies)
+    end
     return _apply_profile_data(data, profile_name, false, true)
 end
 
@@ -643,8 +640,9 @@ local function _switch_profile(new_name, class_key)
     _active_profile = new_name
     _save_manifest(class_key)
 
-    -- Load new profile
-    _import_profile(class_key, new_name, false)
+    -- Load new profile — skip globals so the user's scan range, overlay
+    -- position, and other Global Settings stay fixed across profile switches.
+    _import_profile(class_key, new_name, false, true)
 end
 
 local function _create_new_profile(class_key)
@@ -704,8 +702,8 @@ local function _delete_profile(class_key)
     -- Delete the file
     pcall(function() os.remove(path) end)
 
-    -- Load the new active profile
-    _import_profile(class_key, _active_profile, false)
+    -- Load the new active profile — skip globals for same reason as _switch_profile
+    _import_profile(class_key, _active_profile, false, true)
     console.print('[UniversalRotation] Deleted profile: ' .. to_delete)
 end
 
