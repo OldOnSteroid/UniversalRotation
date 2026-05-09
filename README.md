@@ -21,6 +21,7 @@ A dynamic, priority-based spell rotation engine for Diablo IV. Automatically sel
 - **Town Safety** — Rotation is fully suppressed in safe zones and town areas.
 - **On-Screen Overlay** — Displays equipped spells in priority order, color-coded by status (green = ready, yellow = cooldown, red = unavailable). Shows cast method, target mode, and resource condition tags.
 - **Auto Movement** — Moves toward melee targets that are out of range before casting.
+- **Hold Location** — Pin the character to a fixed world point with a configurable radius. Enemies outside the circle are ignored; the character auto-returns if knocked out of range. Toggle by keybind or checkbox — position is captured automatically on enable. Fully controllable via the plugin API.
 
 ## Project Structure
 
@@ -56,6 +57,11 @@ UniversalRotation/
 | Overlay | Toggle | On | Show on-screen spell status |
 | Overlay X / Y | 0–3000 px | 20 / 12 | Overlay screen position |
 | Show Buff List | Toggle | Off | Display active buffs on overlay |
+| **Hold Location** | | | |
+| Enable Hold Location | Toggle + Keybind | Off | Pin the character to a fixed point; position captured automatically on enable |
+| Hold Location Key | Keybind | Unbound | Toggle Hold Location on/off with a key |
+| Hold Radius | 3–60 yds | 15.0 | Enemies outside this circle are ignored; character returns here if pushed out |
+| Set Position Here | Button | — | Re-pin to current location without toggling the feature |
 
 ### Per-Spell Settings
 
@@ -212,6 +218,13 @@ UR.set_respect_orb(true)
 UR.set_allow_movement(false)
 UR.set_warmachine_override(true)
 UR.set_debug(false)
+
+-- Hold Location
+UR.set_hold_location_enabled(true)   -- enable + pin current position
+UR.set_hold_location_enabled(false)  -- disable + clear pin
+UR.set_hold_location_range(20.0)
+UR.get_hold_location_pos()           -- → { x, y, z } or nil
+UR.set_hold_location_here()          -- re-pin without toggling
 ```
 
 ## How It Works
