@@ -213,6 +213,53 @@ _G.UNIVERSAL_ROTATION.set_debug(true)
 
 ---
 
+## Hold Location
+
+### `get_hold_location_enabled()` → `boolean`
+### `set_hold_location_enabled(value)`
+Enable or disable Hold Location.  Enabling via the API immediately captures
+the current player position as the pin, identical to checking the box in the
+menu.  Disabling clears the stored pin.
+
+```lua
+_G.UNIVERSAL_ROTATION.set_hold_location_enabled(true)   -- enable + pin here
+_G.UNIVERSAL_ROTATION.set_hold_location_enabled(false)  -- disable + clear pin
+```
+
+---
+
+### `get_hold_location_range()` → `number`
+### `set_hold_location_range(value)`
+Hold radius in yards.  Range: `3.0 – 60.0`.
+
+```lua
+_G.UNIVERSAL_ROTATION.set_hold_location_range(20.0)
+```
+
+---
+
+### `get_hold_location_pos()` → `{x, y, z}` or `nil`
+Returns the current pinned position as a plain table, or `nil` if no pin is set.
+
+```lua
+local pin = _G.UNIVERSAL_ROTATION.get_hold_location_pos()
+if pin then
+    print(string.format('Pinned at %.1f, %.1f', pin.x, pin.y))
+end
+```
+
+---
+
+### `set_hold_location_here()` → `boolean`
+Re-pins to the current player position without toggling the feature on or off.
+Returns `true` if successful.
+
+```lua
+_G.UNIVERSAL_ROTATION.set_hold_location_here()
+```
+
+---
+
 ## Example — WarMachine integration snippet
 
 ```lua

@@ -1319,6 +1319,54 @@ _G.UNIVERSAL_ROTATION = {
     set_warmachine_override = function(value)
         if gui.elements.warmachine_override then gui.elements.warmachine_override:set(value and true or false) end
     end,
+
+    -- ---- Hold Location ----
+    get_hold_location_enabled = function()
+        return gui.elements.hold_location_enabled and gui.elements.hold_location_enabled:get() or false
+    end,
+    -- Enabling via API always captures the current player position, same as
+    -- the checkbox rising-edge behaviour.  Pass value=false to disable and
+    -- clear the pin.
+    set_hold_location_enabled = function(value)
+        if gui.elements.hold_location_enabled then
+            gui.elements.hold_location_enabled:set(value and true or false)
+        end
+        -- Force-trigger a position capture when enabling (mirrors the
+        -- handle_profile_io rising-edge logic which runs next tick).
+        -- Done inline here so callers don't need to wait a frame.
+        if value then
+            local lp = get_local_player()
+            if lp then
+                local ok, pos = pcall(function() return lp:get_position() end)
+                if ok and pos then _hold_pos = pos end
+            end
+        else
+            _hold_pos = nil
+        end
+    end,
+    get_hold_location_range = function()
+        return gui.elements.hold_location_range and gui.elements.hold_location_range:get() or 15.0
+    end,
+    set_hold_location_range = function(value)
+        if gui.elements.hold_location_range then gui.elements.hold_location_range:set(tonumber(value) or 15.0) end
+    end,
+    -- Returns the current pinned position as {x, y, z}, or nil if not set.
+    get_hold_location_pos = function()
+        if not _hold_pos then return nil end
+        local ok, x, y, z = pcall(function()
+            return _hold_pos:x(), _hold_pos:y(), _hold_pos:z()
+        end)
+        if ok and x then return { x = x, y = y, z = z } end
+        return nil
+    end,
+    -- Explicitly pin to the current player position without toggling on/off.
+    set_hold_location_here = function()
+        local lp = get_local_player()
+        if not lp then return false end
+        local ok, pos = pcall(function() return lp:get_position() end)
+        if ok and pos then _hold_pos = pos; return true end
+        return false
+    end,
 }
 -- ─────────────────────────────────────────────────────────────────────────────
 
