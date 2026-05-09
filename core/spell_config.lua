@@ -19,6 +19,22 @@ local _gen = {}
 -- consumed.
 local _pending = {}
 
+-- AUTHORITATIVE per-spell config values.  spell_config.apply writes the
+-- imported config here; spell_config.get reads from here in preference to
+-- the widgets.  This guarantees the rotation engine always sees the
+-- imported values immediately, even if the host's widget rebuild somehow
+-- doesn't visually reflect them.
+--
+-- The render path syncs widget changes back to _value so user adjustments
+-- (clicking and dragging a slider in the GUI) flow through to the rotation.
+-- We use change-detection (last-seen widget value) instead of
+-- "current frame is post-apply" flags, because that survives the case
+-- where the host's slider widget renders a stale value after rebuild --
+-- _value never gets corrupted by the stale read since the widget value
+-- never CHANGED across frames, only differed from _value.
+local _value = {}
+local _last_widget = {}  -- per-spell, per-field value from prior render
+
 local function _spell_gen(spell_id)
     return _gen[tostring(spell_id)] or 0
 end
@@ -324,8 +340,24 @@ end
 function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids)
     local e = get_elements(spell_id)
     local st = _get_buff_state(spell_id)
+    local id = tostring(spell_id)
 
     e.enabled:render('Enable', 'Enable this spell in the rotation')
+
+    -- Sync the Enable toggle BEFORE the early-return below; otherwise a
+    -- user disabling a spell wouldn't propagate to _value (the rest of
+    -- the sync block at the bottom of the function never runs in the
+    -- disabled branch).
+    do
+        if not _last_widget[id] then _last_widget[id] = {} end
+        if not _value[id] then _value[id] = {} end
+        local cur = e.enabled:get()
+        if _last_widget[id].enabled ~= nil and _last_widget[id].enabled ~= cur then
+            _value[id].enabled = cur
+        end
+        _last_widget[id].enabled = cur
+    end
+
     if not e.enabled:get() then return end
 
     e.priority:render('Priority (1=highest)', 'Lower number = cast first')
@@ -651,69 +683,169 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
         e.elite_only:render('Elite / Champion only', 'Only cast against elites and champions')
         e.boss_only:render('Boss only', 'Only cast against bosses')
     end
+
+    -- ---- Sync widget changes back into _value ----
+    -- spell_config.get reads from _value when present; this loop catches
+    -- the user clicking / dragging a slider or toggling a checkbox in the
+    -- GUI and writes the new value through.  We use change-detection
+    -- (compared against _last_widget) instead of unconditional writes so
+    -- a stale widget read on the first post-apply render never overwrites
+    -- _value with an old value -- the widget would have to actually CHANGE
+    -- across two renders for sync to fire, which only happens when the
+    -- user moves it.
+    do
+        -- id, _last_widget[id], and _value[id] were already initialized in
+        -- the enabled-sync block at the top of this function.
+        local lw = _last_widget[id]
+        local v  = _value[id]
+
+        local function sync(field, cur)
+            if lw[field] ~= nil and lw[field] ~= cur then
+                v[field] = cur
+            end
+            lw[field] = cur
+        end
+
+        -- enabled is synced earlier in the function so it propagates
+        -- through the disabled-spell early-return branch too.
+        sync('priority',   e.priority:get())
+        sync('cooldown',   e.cooldown:get())
+        sync('charges',    e.charges:get())
+        sync('spell_type', e.spell_type:get())
+        sync('target_mode',e.target_mode:get())
+        sync('range',      e.range:get())
+        sync('aoe_range',  e.aoe_range:get())
+        sync('elite_only', e.elite_only:get())
+        sync('boss_only',  e.boss_only:get())
+        sync('min_enemies',e.min_enemies:get())
+        sync('self_cast',  e.self_cast:get())
+        sync('require_buff', e.require_buff:get())
+        sync('buff_mode',  e.buff_mode:get())
+        sync('buff_stacks',e.buff_stacks:get())
+        sync('use_resource',     e.use_resource:get())
+        sync('resource_override',e.resource_override:get())
+        sync('resource_type',    e.resource_type:get())
+        sync('resource_mode',    e.resource_mode:get())
+        sync('resource_pct',     e.resource_pct:get())
+        sync('use_health', e.use_health:get())
+        sync('health_mode',e.health_mode:get())
+        sync('health_pct', e.health_pct:get())
+        sync('use_chain',     e.use_chain:get())
+        sync('chain_boost',   e.chain_boost:get())
+        sync('chain_duration',e.chain_duration:get())
+        sync('use_stack_pri',     e.use_stack_pri:get())
+        sync('stack_pri_use_buff',e.stack_pri_use_buff:get())
+        sync('stack_pri_count',   e.stack_pri_count:get())
+        sync('stack_pri_below_pri',e.stack_pri_below_pri:get())
+        sync('stack_pri_reset',   e.stack_pri_reset:get())
+        sync('stack_pri_targeted',e.stack_pri_targeted:get())
+        sync('is_channeled', e.is_channeled:get())
+        sync('cast_method',  e.cast_method:get())
+        sync('evade_aim_mode', e.evade_aim_mode:get())
+        sync('skill_slot',   e.skill_slot:get())
+
+        -- evade_key / force_hold_key store VK codes in _value but the
+        -- widget is a combo with index 0..N.  Sync by translating index
+        -- back to VK via the parallel tables.
+        local ek_idx = e.evade_key:get() or 0
+        local ek_vk  = KEY_PRESS_CODES[ek_idx + 1] or 0x20
+        sync('evade_key', ek_vk)
+        local fh_idx = e.force_hold_key:get() or 0
+        local fh_vk  = HOLD_KEY_CODES[fh_idx + 1] or 0x10
+        sync('force_hold_key', fh_vk)
+    end
 end
 
 function spell_config.get(spell_id)
+    local id = tostring(spell_id)
     local e  = get_elements(spell_id)
     local st = _get_buff_state(spell_id)
     local cs = _get_chain_state(spell_id)
 
-    -- Read chain combo selection live
+    -- Read chain combo selection live (combo widgets DO have :set on this
+    -- host, so they reflect imported values correctly without our bypass)
     if e.use_chain and e.use_chain:get() and e.chain_combo and e._chain_ids then
         local sel = e.chain_combo:get() or 0
         cs.target_id = e._chain_ids[sel + 1] or 0
     end
 
-    return {
-        enabled         = e.enabled:get(),
-        priority        = e.priority:get(),
-        cooldown        = e.cooldown:get(),
-        charges         = e.charges:get(),
-        spell_type      = e.spell_type:get(),
-        target_mode     = e.target_mode:get(),
-        range           = e.range:get(),
-        aoe_range       = e.aoe_range:get(),
-        elite_only      = e.elite_only:get(),
-        boss_only       = e.boss_only:get(),
-        min_enemies     = e.min_enemies:get(),
-        self_cast       = e.self_cast:get(),
+    -- Helper: prefer the authoritative _value entry over the widget read.
+    -- _value gets written by spell_config.apply on profile import / switch
+    -- AND by the render-time sync when the user adjusts a widget.  Widget
+    -- reads are the fallback for spells that have never been through apply
+    -- (cold start, never had a saved profile).
+    local v = _value[id]
+    local function pick(field, widget_val)
+        if v ~= nil and v[field] ~= nil then return v[field] end
+        return widget_val
+    end
 
-        require_buff    = e.require_buff:get(),
+    -- evade_key / force_hold_key are stored as VK codes in _value (that's
+    -- what the JSON has) but as combo indices in the widget.  When pulling
+    -- from _value we want the raw VK; from the widget we have to translate.
+    local evade_key_vk
+    if v ~= nil and v.evade_key ~= nil then
+        evade_key_vk = v.evade_key
+    else
+        evade_key_vk = KEY_PRESS_CODES[(e.evade_key:get() or 0) + 1] or 0x20
+    end
+    local force_hold_key_vk
+    if v ~= nil and v.force_hold_key ~= nil then
+        force_hold_key_vk = v.force_hold_key
+    else
+        force_hold_key_vk = HOLD_KEY_CODES[(e.force_hold_key:get() or 0) + 1] or 0x10
+    end
+
+    return {
+        enabled         = pick('enabled',     e.enabled:get()),
+        priority        = pick('priority',    e.priority:get()),
+        cooldown        = pick('cooldown',    e.cooldown:get()),
+        charges         = pick('charges',     e.charges:get()),
+        spell_type      = pick('spell_type',  e.spell_type:get()),
+        target_mode     = pick('target_mode', e.target_mode:get()),
+        range           = pick('range',       e.range:get()),
+        aoe_range       = pick('aoe_range',   e.aoe_range:get()),
+        elite_only      = pick('elite_only',  e.elite_only:get()),
+        boss_only       = pick('boss_only',   e.boss_only:get()),
+        min_enemies     = pick('min_enemies', e.min_enemies:get()),
+        self_cast       = pick('self_cast',   e.self_cast:get()),
+
+        require_buff    = pick('require_buff', e.require_buff:get()),
         buff_hash       = st.buff_hash or 0,
         buff_name       = (st.buff_name ~= '' and st.buff_name) or (_buff_name_cache[tostring(spell_id)] or ''),
-        buff_mode       = e.buff_mode:get(),     -- 0=Active, 1=Missing
-        buff_stacks     = e.buff_stacks:get(),
+        buff_mode       = pick('buff_mode',   e.buff_mode:get()),     -- 0=Active, 1=Missing
+        buff_stacks     = pick('buff_stacks', e.buff_stacks:get()),
 
-        use_resource      = e.use_resource:get(),
-        resource_override = e.resource_override:get(),
-        resource_type     = e.resource_type:get(),   -- 0=Primary %, 1=Secondary count
-        resource_mode     = e.resource_mode:get(),   -- 0=Below, 1=Above
-        resource_pct      = e.resource_pct:get(),
+        use_resource      = pick('use_resource',      e.use_resource:get()),
+        resource_override = pick('resource_override', e.resource_override:get()),
+        resource_type     = pick('resource_type',     e.resource_type:get()),
+        resource_mode     = pick('resource_mode',     e.resource_mode:get()),
+        resource_pct      = pick('resource_pct',      e.resource_pct:get()),
 
-        use_health      = e.use_health:get(),
-        health_mode     = e.health_mode:get(),     -- 0=Below, 1=Above
-        health_pct      = e.health_pct:get(),
+        use_health      = pick('use_health',  e.use_health:get()),
+        health_mode     = pick('health_mode', e.health_mode:get()),
+        health_pct      = pick('health_pct',  e.health_pct:get()),
 
-        use_chain       = e.use_chain:get(),
+        use_chain       = pick('use_chain',      e.use_chain:get()),
         chain_target_id = cs.target_id or 0,
-        chain_boost     = e.chain_boost:get(),
-        chain_duration  = e.chain_duration:get(),
+        chain_boost     = pick('chain_boost',    e.chain_boost:get()),
+        chain_duration  = pick('chain_duration', e.chain_duration:get()),
 
-        use_stack_pri        = e.use_stack_pri:get(),
-        stack_pri_use_buff   = e.stack_pri_use_buff:get(),
+        use_stack_pri        = pick('use_stack_pri',        e.use_stack_pri:get()),
+        stack_pri_use_buff   = pick('stack_pri_use_buff',   e.stack_pri_use_buff:get()),
         stack_pri_buff_hash  = _get_stack_pri_buff_state(spell_id).buff_hash or 0,
         stack_pri_buff_name  = _get_stack_pri_buff_state(spell_id).buff_name or '',
-        stack_pri_count      = e.stack_pri_count:get(),
-        stack_pri_below_pri  = e.stack_pri_below_pri:get(),
-        stack_pri_reset      = e.stack_pri_reset:get(),
-        stack_pri_targeted   = e.stack_pri_targeted:get(),
+        stack_pri_count      = pick('stack_pri_count',      e.stack_pri_count:get()),
+        stack_pri_below_pri  = pick('stack_pri_below_pri',  e.stack_pri_below_pri:get()),
+        stack_pri_reset      = pick('stack_pri_reset',      e.stack_pri_reset:get()),
+        stack_pri_targeted   = pick('stack_pri_targeted',   e.stack_pri_targeted:get()),
 
-        is_channeled    = e.is_channeled:get(),
-        cast_method     = e.cast_method:get(),       -- 0=Normal, 1=Key Press, 2=Force Stand Still + Key
-        evade_key       = KEY_PRESS_CODES[(e.evade_key:get() or 0) + 1] or 0x20,   -- actual VK code
-        evade_aim_mode  = e.evade_aim_mode:get(),     -- 0=no aim, 1=towards enemy, 2=orbwalker direction
-        force_hold_key  = HOLD_KEY_CODES[(e.force_hold_key:get() or 0) + 1] or 0x10,  -- actual VK code
-        skill_slot      = e.skill_slot:get(),          -- 0-5 = slot 1-6
+        is_channeled    = pick('is_channeled', e.is_channeled:get()),
+        cast_method     = pick('cast_method',  e.cast_method:get()),
+        evade_key       = evade_key_vk,
+        evade_aim_mode  = pick('evade_aim_mode', e.evade_aim_mode:get()),
+        force_hold_key  = force_hold_key_vk,
+        skill_slot      = pick('skill_slot',     e.skill_slot:get()),
     }
 end
 
@@ -765,6 +897,12 @@ function spell_config.apply(spell_id, cfg)
     _pending[id] = p
     _bump_spell_gen(spell_id)
     _elements[id] = nil   -- force lazy rebuild on next get_elements
+
+    -- Authoritative copy: spell_config.get reads from here.  Even if the
+    -- host's slider rebuild doesn't visually pick up the new defaults, the
+    -- rotation engine still sees the imported values.
+    _value[id] = p
+    _last_widget[id] = nil  -- next render's sync starts fresh; no false-positive sync
 
     -- Side-table state (buff hash/name, chain target, stack-pri buff) lives
     -- outside the widget set so it survives the rebuild, but we still need
