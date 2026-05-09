@@ -1,5 +1,5 @@
 local plugin_label   = 'magoogles_universal_rotation'
-local plugin_version = '1.0.16'
+local plugin_version = '1.0.17'
 console.print('Lua Plugin - Magoogles Universal Rotation - v' .. plugin_version)
 
 local gui = {}
@@ -141,10 +141,12 @@ gui.elements = {
     cloud_import_code_btn     = cb(false, 'cloud_import_code_btn'),
 
     -- Hold Location
-    hold_location_tree    = tree_node:new(1),
-    hold_location_enabled = cb(false, 'hold_location_enabled'),
-    hold_location_range   = sf(3.0, 60.0, 15.0, 'hold_location_range'),
-    hold_location_set_btn = cb(false, 'hold_location_set_btn'),
+    hold_location_tree     = tree_node:new(1),
+    hold_location_enabled  = cb(false, 'hold_location_enabled'),
+    hold_location_range    = sf(3.0, 60.0, 15.0, 'hold_location_range'),
+    hold_location_set_btn  = cb(false, 'hold_location_set_btn'),
+    use_hold_loc_keybind   = cb(false, 'use_hold_loc_keybind'),
+    hold_loc_keybind       = keybind:new(0x0A, true, get_hash(plugin_label .. '_hold_loc_keybind')),
 
     -- Buff filter checkboxes (controls which categories appear in buff dropdowns)
     buff_filter_tree    = tree_node:new(2),
@@ -300,9 +302,13 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
         -- Hold Location
         if gui.elements.hold_location_tree:push('Hold Location') then
             render_menu_header('Pin the character to a fixed point. Enemies outside the radius are ignored; the character auto-returns if it drifts out.')
-            gui.elements.hold_location_enabled:render('Enable Hold Location', 'Lock combat to a radius around a fixed point in the world')
+            gui.elements.hold_location_enabled:render('Enable Hold Location', 'Lock combat to a radius around a fixed point in the world — position is captured automatically on enable')
+            gui.elements.use_hold_loc_keybind:render('Use Keybind', 'Toggle Hold Location on/off with a key (also captures position on each enable)')
+            if gui.elements.use_hold_loc_keybind:get() then
+                gui.elements.hold_loc_keybind:render('Hold Location Key', 'Key to toggle Hold Location on/off')
+            end
             gui.elements.hold_location_range:render('Hold Radius (yds)', 'Enemies outside this circle are ignored; player returns here if pushed out', 1)
-            gui.elements.hold_location_set_btn:render('Set Position Here', 'Capture the current player position as the hold point (also auto-captured when first enabled)')
+            gui.elements.hold_location_set_btn:render('Set Position Here', 'Re-pin to the current player position without toggling the feature')
             if type(hold_info) == 'table' and hold_info.label then
                 render_menu_header(hold_info.label)
             end

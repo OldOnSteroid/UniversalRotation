@@ -905,10 +905,27 @@ local function handle_profile_io()
     end
 
     -- ---- Hold Location ----
+    -- Keybind: when "Use Keybind" is on, drive the enabled checkbox from
+    -- the keybind's toggle state so the key works independently of the checkbox.
+    if gui.elements.use_hold_loc_keybind and gui.elements.use_hold_loc_keybind:get() then
+        local vk, st = 0x0A, false
+        pcall(function()
+            vk = gui.elements.hold_loc_keybind:get_key()
+            st = gui.elements.hold_loc_keybind:get_state()
+        end)
+        if vk ~= 0x0A then
+            local kb_active = (st == 1 or st == true)
+            if gui.elements.hold_location_enabled then
+                pcall(gui.elements.hold_location_enabled.set, gui.elements.hold_location_enabled, kb_active)
+            end
+        end
+    end
+
     local hl_en = gui.elements.hold_location_enabled and gui.elements.hold_location_enabled:get() or false
 
-    -- Rising edge: auto-capture position the moment the user enables it (if not already set)
-    if hl_en and not _hold_loc_prev_en and not _hold_pos then
+    -- Rising edge: always auto-capture position whenever the feature is enabled
+    -- (whether via checkbox or keybind) — no need to click "Set Position Here"
+    if hl_en and not _hold_loc_prev_en then
         local lp2 = get_local_player()
         if lp2 then
             local ok2, pos2 = pcall(function() return lp2:get_position() end)
