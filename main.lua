@@ -175,6 +175,26 @@ local function _set_element(el, val)
     if type(el.set_value) == 'function' then pcall(el.set_value, el, val); return end
 end
 
+-- Slider widgets (slider_int / slider_float) have NO :set method on this host,
+-- so _set_element silently no-ops on sliders.  We work around it by rebuilding
+-- the slider widget with a fresh hash so the host has no persisted state for
+-- it and the new widget renders at its DEFAULT value (= the imported value).
+-- See core/spell_config.lua for the per-spell variant.
+local _global_apply_gen = 0
+local function _apply_global_slider(field_name, ctor, min, max, val)
+    if val == nil or not gui or not gui.elements then return end
+    local el = gui.elements[field_name]
+    local cur
+    if el and type(el.get) == 'function' then
+        local ok, v = pcall(el.get, el)
+        if ok then cur = v end
+    end
+    if cur ~= nil and math.abs((cur or 0) - (val or 0)) < 1e-6 then return end
+    _global_apply_gen = _global_apply_gen + 1
+    local fresh_hash = get_hash('magoogles_universal_rotation_' .. field_name .. '_g' .. _global_apply_gen)
+    gui.elements[field_name] = ctor(min, max, val, fresh_hash)
+end
+
 local function _class_key()
     local lp = get_local_player()
     if not lp or type(lp.get_character_class_id) ~= 'function' then return 'unknown' end
@@ -484,13 +504,13 @@ local function _apply_profile_data(data, display_name, silent)
     if type(data) ~= 'table' then return false end
 
     if type(data.global) == 'table' then
-        _set_element(gui.elements.scan_range,         data.global.scan_range)
-        _set_element(gui.elements.anim_delay,         data.global.anim_delay)
-        _set_element(gui.elements.global_min_enemies, data.global.global_min_enemies)
+        _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, data.global.scan_range)
+        _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  data.global.anim_delay)
+        _apply_global_slider('global_min_enemies', slider_int,   0,   15,   data.global.global_min_enemies)
         _set_element(gui.elements.debug_mode,         data.global.debug_mode)
         _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
-        _set_element(gui.elements.overlay_x,          data.global.overlay_x)
-        _set_element(gui.elements.overlay_y,          data.global.overlay_y)
+        _apply_global_slider('overlay_x',          slider_int,   0,   3000, data.global.overlay_x)
+        _apply_global_slider('overlay_y',          slider_int,   0,   3000, data.global.overlay_y)
         _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
     end
 

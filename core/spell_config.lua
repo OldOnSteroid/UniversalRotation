@@ -684,48 +684,83 @@ local function _set_element(el, val)
     end
 end
 
+-- Slider widgets (slider_int / slider_float) have NO :set method on this
+-- host -- the API exposes only new + render + get.  That meant every
+-- profile-load call to _set_element on a slider silently no-op'd, so
+-- imported priority / range / aoe_range / cooldown / charges / min_enemies
+-- / *_pct / chain_* / stack_pri_* values never made it into the GUI even
+-- though the JSON had them.  This was the user-reported "cloud profiles
+-- don't reflect uploader's settings" symptom.
+--
+-- Fix: rebuild the slider widget with a fresh hash whenever the imported
+-- value differs from the live one.  Fresh hash starts with no host-side
+-- persisted state, so the new widget reads its DEFAULT (= the imported
+-- value) on first render.  Old hash entries are orphaned but harmless.
+-- Apply-generation counter keeps the rebuilt hashes unique per session
+-- so back-to-back applies of different values always take effect.
+local _apply_gen = 0
+local function _bump_apply_gen() _apply_gen = _apply_gen + 1; return _apply_gen end
+
+local function _apply_slider(e, field_name, ctor, min, max, val, spell_id)
+    if val == nil then return end
+    local cur
+    if e[field_name] and type(e[field_name].get) == 'function' then
+        local ok, v = pcall(e[field_name].get, e[field_name])
+        if ok then cur = v end
+    end
+    -- Float comparison tolerates the JSON round-trip's tiny precision drift.
+    if cur ~= nil and math.abs((cur or 0) - (val or 0)) < 1e-6 then return end
+    local fresh_hash = get_hash(key(spell_id, field_name .. '_g' .. _apply_gen))
+    e[field_name] = ctor(min, max, val, fresh_hash)
+end
+
 function spell_config.apply(spell_id, cfg)
     if type(cfg) ~= 'table' then return end
     local e  = get_elements(spell_id)
     local st = _get_buff_state(spell_id)
     local cs = _get_chain_state(spell_id)
 
+    -- Bump apply-gen so every slider rebuilt during this apply gets a unique
+    -- fresh hash.  Without this, a second apply of the same field within a
+    -- session could collide with the first rebuild's hash.
+    _bump_apply_gen()
+
     _set_element(e.enabled,       cfg.enabled)
-    _set_element(e.priority,      cfg.priority)
-    _set_element(e.cooldown,      cfg.cooldown)
-    _set_element(e.charges,       cfg.charges)
+    _apply_slider(e, 'priority',  slider_int,   1, 10,  cfg.priority,  spell_id)
+    _apply_slider(e, 'cooldown',  slider_float, 0.0, 5.0, cfg.cooldown, spell_id)
+    _apply_slider(e, 'charges',   slider_int,   1, 5,   cfg.charges,   spell_id)
     _set_element(e.spell_type,    cfg.spell_type)
     _set_element(e.target_mode,   cfg.target_mode)
-    _set_element(e.range,         cfg.range)
-    _set_element(e.aoe_range,     cfg.aoe_range)
+    _apply_slider(e, 'range',     slider_float, 1.0, 30.0, cfg.range,     spell_id)
+    _apply_slider(e, 'aoe_range', slider_float, 1.0, 20.0, cfg.aoe_range, spell_id)
     _set_element(e.elite_only,    cfg.elite_only)
     _set_element(e.boss_only,     cfg.boss_only)
-    _set_element(e.min_enemies,   cfg.min_enemies)
+    _apply_slider(e, 'min_enemies', slider_int, 0, 15,  cfg.min_enemies, spell_id)
     _set_element(e.self_cast,     cfg.self_cast)
 
     _set_element(e.require_buff,  cfg.require_buff)
     _set_element(e.buff_mode,     cfg.buff_mode)
-    _set_element(e.buff_stacks,   cfg.buff_stacks)
+    _apply_slider(e, 'buff_stacks', slider_int, 1, 50, cfg.buff_stacks, spell_id)
 
     _set_element(e.use_resource,      cfg.use_resource)
     _set_element(e.resource_override, cfg.resource_override)
     _set_element(e.resource_type,     cfg.resource_type)
     _set_element(e.resource_mode,     cfg.resource_mode)
-    _set_element(e.resource_pct,      cfg.resource_pct)
+    _apply_slider(e, 'resource_pct',  slider_int, 1, 100, cfg.resource_pct, spell_id)
 
     _set_element(e.use_health,    cfg.use_health)
     _set_element(e.health_mode,   cfg.health_mode)
-    _set_element(e.health_pct,    cfg.health_pct)
+    _apply_slider(e, 'health_pct', slider_int, 1, 100, cfg.health_pct, spell_id)
 
     _set_element(e.use_chain,     cfg.use_chain)
-    _set_element(e.chain_boost,   cfg.chain_boost)
-    _set_element(e.chain_duration, cfg.chain_duration)
+    _apply_slider(e, 'chain_boost',    slider_int,   1, 9,    cfg.chain_boost,    spell_id)
+    _apply_slider(e, 'chain_duration', slider_float, 0.5, 10.0, cfg.chain_duration, spell_id)
 
     _set_element(e.use_stack_pri,        cfg.use_stack_pri)
     _set_element(e.stack_pri_use_buff,   cfg.stack_pri_use_buff)
-    _set_element(e.stack_pri_count,      cfg.stack_pri_count)
-    _set_element(e.stack_pri_below_pri,  cfg.stack_pri_below_pri)
-    _set_element(e.stack_pri_reset,      cfg.stack_pri_reset)
+    _apply_slider(e, 'stack_pri_count',     slider_int,   1, 20,   cfg.stack_pri_count,     spell_id)
+    _apply_slider(e, 'stack_pri_below_pri', slider_int,   1, 10,   cfg.stack_pri_below_pri, spell_id)
+    _apply_slider(e, 'stack_pri_reset',     slider_float, 0.5, 15.0, cfg.stack_pri_reset,   spell_id)
     _set_element(e.stack_pri_targeted,   cfg.stack_pri_targeted)
     do
         local sps = _get_stack_pri_buff_state(spell_id)
