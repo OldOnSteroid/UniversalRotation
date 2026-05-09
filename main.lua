@@ -500,10 +500,14 @@ local function _export_profile(class_key, profile_name)
 end
 
 -- Apply a parsed profile data table to the current session.
-local function _apply_profile_data(data, display_name, silent)
+-- skip_globals=true keeps the user's local global settings (scan range,
+-- overlay position, etc.) when importing a profile from the cloud --
+-- those are personal preferences not authored intent.  Local profile
+-- switches still apply globals so each saved profile can carry its own.
+local function _apply_profile_data(data, display_name, silent, skip_globals)
     if type(data) ~= 'table' then return false end
 
-    if type(data.global) == 'table' then
+    if type(data.global) == 'table' and not skip_globals then
         _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, data.global.scan_range)
         _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  data.global.anim_delay)
         _apply_global_slider('global_min_enemies', slider_int,   0,   15,   data.global.global_min_enemies)
@@ -585,14 +589,24 @@ local function _import_from_json(json_str, profile_name)
     end
     _active_profile = profile_name
     local path = _profile_path_for(class_key, profile_name)
+    -- Strip globals from the on-disk copy so subsequent script reloads
+    -- (which call _import_profile -> _apply_profile_data with the default
+    -- skip_globals=false) cannot apply the uploader's scan range / overlay
+    -- position over the user's preferences.
+    data.global = nil
+    local sanitized_json = profile_io.to_json(data)
     pcall(function()
         local fw = io.open(path, 'w')
-        if fw then fw:write(json_str); fw:close() end
+        if fw then fw:write(sanitized_json); fw:close() end
     end)
     _save_manifest(class_key)
     _last_profile_idx = _get_active_profile_index()
     _set_element(gui.elements.profile_combo, _last_profile_idx)
-    return _apply_profile_data(data, profile_name, false)
+    -- Cloud imports skip globals: scan range / overlay position / debug
+    -- mode etc. are personal preferences, not authored rotation intent.
+    -- The downloader keeps their own global settings, but every per-spell
+    -- field (priority, range, AoE, conditions, ...) gets the uploader's.
+    return _apply_profile_data(data, profile_name, false, true)
 end
 
 local function _switch_profile(new_name, class_key)

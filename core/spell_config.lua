@@ -6,6 +6,29 @@ local _elements = {}
 local _buff_name_cache = {}
 local _buff_state = {}
 
+-- Per-spell rebuild generation.  Bumped by spell_config.apply so the next
+-- get_elements call constructs fresh widgets whose hashes have never been
+-- seen by the host before (no persisted state -> constructor default is
+-- the value the user actually sees).  Stored per-spell so each import only
+-- invalidates the widgets it actually touched.
+local _gen = {}
+
+-- Pending constructor defaults from the most recent apply.  get_elements
+-- reads from this table when building a new widget set, so the imported
+-- values become the visible UI values on the next render.  Cleared once
+-- consumed.
+local _pending = {}
+
+local function _spell_gen(spell_id)
+    return _gen[tostring(spell_id)] or 0
+end
+
+local function _bump_spell_gen(spell_id)
+    local id = tostring(spell_id)
+    _gen[id] = (_gen[id] or 0) + 1
+    return _gen[id]
+end
+
 -- Chain state: [spell_id] = { chain_spell_id, chain_boost_amount, chain_duration }
 -- These are plain numbers/values so we store them in a side table, not UI elements
 local _chain_state = {}
@@ -127,77 +150,99 @@ local function get_elements(spell_id)
     local default_cast_method = is_virtual and 1 or 0  -- 1=Key Press for virtual
     local default_self_cast = is_virtual  -- virtual is always self-cast style
 
-    local e = {
-        enabled      = checkbox:new(default_enabled, get_hash(key(spell_id, 'enabled'))),
-        priority     = slider_int:new(1, 10, 5, get_hash(key(spell_id, 'priority'))),
+    -- Hash suffix is salted with the per-spell rebuild generation, so each
+    -- spell_config.apply (cloud-profile import or local profile switch)
+    -- forces the host to construct fresh widget objects with no persisted
+    -- state -- ensuring the constructor defaults below (which read from
+    -- _pending[id]) are what the user sees on the next render.
+    local gen = _spell_gen(spell_id)
+    local function h(suffix)
+        return get_hash(key(spell_id, suffix .. '_g' .. gen))
+    end
 
-        cooldown     = slider_float:new(0.0, 5.0, 0.4, get_hash(key(spell_id, 'cooldown'))),
-        charges      = slider_int:new(1, 5, 1, get_hash(key(spell_id, 'charges'))),
+    -- Pull constructor defaults from any pending apply.  When _pending[id]
+    -- is set, every slider / checkbox / combo below is built with the
+    -- imported value as its initial value.  When unset (cold start, first
+    -- render of a spell), the hardcoded fallbacks below are used.
+    local p = _pending[id] or {}
+    local function pv(field, fallback)
+        local v = p[field]
+        if v == nil then return fallback end
+        return v
+    end
+
+    local e = {
+        enabled      = checkbox:new(pv('enabled', default_enabled), h('enabled')),
+        priority     = slider_int:new(1, 10, pv('priority', 5), h('priority')),
+
+        cooldown     = slider_float:new(0.0, 5.0, pv('cooldown', 0.4), h('cooldown')),
+        charges      = slider_int:new(1, 5, pv('charges', 1), h('charges')),
 
         -- Target mode: 0=Priority, 1=Closest, 2=Lowest HP, 3=Highest HP, 4=Cleave Center
-        target_mode  = combo_box:new(0, get_hash(key(spell_id, 'target_mode'))),
+        target_mode  = combo_box:new(pv('target_mode', 0), h('target_mode')),
 
-        spell_type   = combo_box:new(0, get_hash(key(spell_id, 'spell_type'))),
+        spell_type   = combo_box:new(pv('spell_type', 0), h('spell_type')),
 
-        range        = slider_float:new(1.0, 30.0, 12.0, get_hash(key(spell_id, 'range'))),
-        aoe_range    = slider_float:new(1.0, 20.0, 6.0,  get_hash(key(spell_id, 'aoe_range'))),
+        range        = slider_float:new(1.0, 30.0, pv('range', 12.0), h('range')),
+        aoe_range    = slider_float:new(1.0, 20.0, pv('aoe_range', 6.0),  h('aoe_range')),
 
-        require_buff = checkbox:new(false, get_hash(key(spell_id, 'require_buff'))),
+        require_buff = checkbox:new(pv('require_buff', false), h('require_buff')),
         buff_combo   = nil,
         buff_search  = nil,
-        buff_mode    = combo_box:new(0, get_hash(key(spell_id, 'buff_mode'))),  -- 0=Active, 1=Missing
-        buff_stacks  = slider_int:new(1, 50, 1, get_hash(key(spell_id, 'buff_stacks'))),
+        buff_mode    = combo_box:new(pv('buff_mode', 0), h('buff_mode')),  -- 0=Active, 1=Missing
+        buff_stacks  = slider_int:new(1, 50, pv('buff_stacks', 1), h('buff_stacks')),
 
-        elite_only   = checkbox:new(false, get_hash(key(spell_id, 'elite_only'))),
-        boss_only    = checkbox:new(false, get_hash(key(spell_id, 'boss_only'))),
-        min_enemies  = slider_int:new(0, 15, 0, get_hash(key(spell_id, 'min_enemies'))),
+        elite_only   = checkbox:new(pv('elite_only', false), h('elite_only')),
+        boss_only    = checkbox:new(pv('boss_only', false), h('boss_only')),
+        min_enemies  = slider_int:new(0, 15, pv('min_enemies', 0), h('min_enemies')),
 
         -- Self cast: cast on player position, no target needed
-        self_cast    = checkbox:new(default_self_cast, get_hash(key(spell_id, 'self_cast'))),
+        self_cast    = checkbox:new(pv('self_cast', default_self_cast), h('self_cast')),
 
         -- Combo chain: after casting THIS spell, boost priority of another spell
-        use_chain       = checkbox:new(false, get_hash(key(spell_id, 'use_chain'))),
+        use_chain       = checkbox:new(pv('use_chain', false), h('use_chain')),
         chain_combo     = nil,   -- built lazily when equipped_ids list is available
-        chain_boost     = slider_int:new(1, 9, 3, get_hash(key(spell_id, 'chain_boost'))),
-        chain_duration  = slider_float:new(0.5, 10.0, 3.0, get_hash(key(spell_id, 'chain_duration'))),
+        chain_boost     = slider_int:new(1, 9, pv('chain_boost', 3), h('chain_boost')),
+        chain_duration  = slider_float:new(0.5, 10.0, pv('chain_duration', 3.0), h('chain_duration')),
 
         -- Resource condition
-        use_resource      = checkbox:new(false, get_hash(key(spell_id, 'use_resource'))),
-        resource_override = checkbox:new(false, get_hash(key(spell_id, 'resource_override'))),  -- bypasses all resource checks (assume full)
-        resource_type     = combo_box:new(0, get_hash(key(spell_id, 'resource_type'))),  -- 0=Primary %, 1=Secondary count (combo points / Warlock 2nd resource)
-        resource_mode     = combo_box:new(1, get_hash(key(spell_id, 'resource_mode'))),  -- default: Above %
-        resource_pct      = slider_int:new(1, 100, 50, get_hash(key(spell_id, 'resource_pct'))),
+        use_resource      = checkbox:new(pv('use_resource', false), h('use_resource')),
+        resource_override = checkbox:new(pv('resource_override', false), h('resource_override')),  -- bypasses all resource checks (assume full)
+        resource_type     = combo_box:new(pv('resource_type', 0), h('resource_type')),  -- 0=Primary %, 1=Secondary count (combo points / Warlock 2nd resource)
+        resource_mode     = combo_box:new(pv('resource_mode', 1), h('resource_mode')),  -- default: Above %
+        resource_pct      = slider_int:new(1, 100, pv('resource_pct', 50), h('resource_pct')),
 
         -- Health condition
-        use_health      = checkbox:new(false, get_hash(key(spell_id, 'use_health'))),
-        health_mode     = combo_box:new(0, get_hash(key(spell_id, 'health_mode'))),  -- default: Below %
-        health_pct      = slider_int:new(1, 100, 50, get_hash(key(spell_id, 'health_pct'))),
+        use_health      = checkbox:new(pv('use_health', false), h('use_health')),
+        health_mode     = combo_box:new(pv('health_mode', 0), h('health_mode')),  -- default: Below %
+        health_pct      = slider_int:new(1, 100, pv('health_pct', 50), h('health_pct')),
 
         -- Stack Priority Mode: cast at override priority until condition met, then revert
-        use_stack_pri        = checkbox:new(false, get_hash(key(spell_id, 'use_stack_pri'))),
-        stack_pri_use_buff   = checkbox:new(false, get_hash(key(spell_id, 'stack_pri_use_buff'))),
+        use_stack_pri        = checkbox:new(pv('use_stack_pri', false), h('use_stack_pri')),
+        stack_pri_use_buff   = checkbox:new(pv('stack_pri_use_buff', false), h('stack_pri_use_buff')),
         stack_pri_buff_combo = nil,  -- built lazily
-        stack_pri_count      = slider_int:new(1, 20, 4,   get_hash(key(spell_id, 'stack_pri_count'))),
-        stack_pri_below_pri  = slider_int:new(1, 10, 1,   get_hash(key(spell_id, 'stack_pri_below_pri'))),
-        stack_pri_reset      = slider_float:new(0.5, 15.0, 4.0, get_hash(key(spell_id, 'stack_pri_reset'))),
-        stack_pri_targeted   = checkbox:new(false, get_hash(key(spell_id, 'stack_pri_targeted'))),
+        stack_pri_count      = slider_int:new(1, 20, pv('stack_pri_count', 4),   h('stack_pri_count')),
+        stack_pri_below_pri  = slider_int:new(1, 10, pv('stack_pri_below_pri', 1),   h('stack_pri_below_pri')),
+        stack_pri_reset      = slider_float:new(0.5, 15.0, pv('stack_pri_reset', 4.0), h('stack_pri_reset')),
+        stack_pri_targeted   = checkbox:new(pv('stack_pri_targeted', false), h('stack_pri_targeted')),
 
         -- Channeled: when active, rotation holds off so it doesn't interrupt the cast
-        is_channeled    = checkbox:new(false, get_hash(key(spell_id, 'is_channeled'))),
+        is_channeled    = checkbox:new(pv('is_channeled', false), h('is_channeled')),
 
         -- Cast method: 0=Normal, 1=Key Press, 2=Force Stand Still + Key
-        cast_method     = combo_box:new(default_cast_method, get_hash(key(spell_id, 'cast_method'))),
-        evade_key       = combo_box:new(0, get_hash(key(spell_id, 'evade_key'))),  -- index into KEY_PRESS_CODES; default 0 = Space
+        cast_method     = combo_box:new(pv('cast_method', default_cast_method), h('cast_method')),
+        evade_key       = combo_box:new(pv('_evade_key_idx', 0), h('evade_key')),  -- index into KEY_PRESS_CODES; default 0 = Space
 
         -- Evade aim mode (only for Key Press method): 0=no aim, 1=towards enemy, 2=orbwalker direction
-        evade_aim_mode  = combo_box:new(0, get_hash(key(spell_id, 'evade_aim_mode'))),
+        evade_aim_mode  = combo_box:new(pv('evade_aim_mode', 0), h('evade_aim_mode')),
 
         -- Force Stand Still + Skill slot
-        force_hold_key  = combo_box:new(0, get_hash(key(spell_id, 'force_hold_key'))),  -- index into HOLD_KEY_CODES; default 0 = Shift
-        skill_slot      = combo_box:new(0, get_hash(key(spell_id, 'skill_slot'))),  -- 0=Slot 1 (key '1'), etc.
+        force_hold_key  = combo_box:new(pv('_force_hold_key_idx', 0), h('force_hold_key')),  -- index into HOLD_KEY_CODES; default 0 = Shift
+        skill_slot      = combo_box:new(pv('skill_slot', 0), h('skill_slot')),  -- 0=Slot 1 (key '1'), etc.
     }
 
     _elements[id] = e
+    _pending[id] = nil  -- one-shot: defaults consumed
     return e
 end
 
@@ -684,108 +729,54 @@ local function _set_element(el, val)
     end
 end
 
--- Slider widgets (slider_int / slider_float) have NO :set method on this
--- host -- the API exposes only new + render + get.  That meant every
--- profile-load call to _set_element on a slider silently no-op'd, so
--- imported priority / range / aoe_range / cooldown / charges / min_enemies
--- / *_pct / chain_* / stack_pri_* values never made it into the GUI even
--- though the JSON had them.  This was the user-reported "cloud profiles
--- don't reflect uploader's settings" symptom.
---
--- Fix: rebuild the slider widget with a fresh hash whenever the imported
--- value differs from the live one.  Fresh hash starts with no host-side
--- persisted state, so the new widget reads its DEFAULT (= the imported
--- value) on first render.  Old hash entries are orphaned but harmless.
--- Apply-generation counter keeps the rebuilt hashes unique per session
--- so back-to-back applies of different values always take effect.
-local _apply_gen = 0
-local function _bump_apply_gen() _apply_gen = _apply_gen + 1; return _apply_gen end
-
-local function _apply_slider(e, field_name, ctor, min, max, val, spell_id)
-    if val == nil then return end
-    local cur
-    if e[field_name] and type(e[field_name].get) == 'function' then
-        local ok, v = pcall(e[field_name].get, e[field_name])
-        if ok then cur = v end
-    end
-    -- Float comparison tolerates the JSON round-trip's tiny precision drift.
-    if cur ~= nil and math.abs((cur or 0) - (val or 0)) < 1e-6 then return end
-    local fresh_hash = get_hash(key(spell_id, field_name .. '_g' .. _apply_gen))
-    e[field_name] = ctor(min, max, val, fresh_hash)
-end
-
 function spell_config.apply(spell_id, cfg)
     if type(cfg) ~= 'table' then return end
-    local e  = get_elements(spell_id)
+    local id = tostring(spell_id)
     local st = _get_buff_state(spell_id)
     local cs = _get_chain_state(spell_id)
 
-    -- Bump apply-gen so every slider rebuilt during this apply gets a unique
-    -- fresh hash.  Without this, a second apply of the same field within a
-    -- session could collide with the first rebuild's hash.
-    _bump_apply_gen()
+    -- Strategy: stash the imported config in _pending[id], destroy the
+    -- existing widget set, and bump the spell's hash generation.  The next
+    -- get_elements() call (triggered by the next render or rotation tick)
+    -- builds a fresh widget set whose every hash is one the host has never
+    -- seen -- no persisted state -- with the imported values supplied as
+    -- constructor defaults.  This sidesteps the host-side slider widget's
+    -- lack of a :set method (the previous "rebuild the one slider" approach
+    -- in v1.0.12 wasn't taking effect for users; rebuilding the entire set
+    -- with a fresh generation is the bigger hammer that actually works).
+    --
+    -- Two values need to be remapped from VK code (stored in the JSON) back
+    -- to combo index (what combo_box:new wants).  We stash them in _pending
+    -- under sentinel keys so get_elements can read them as constructor args.
+    local p = {}
+    for k, v in pairs(cfg) do p[k] = v end
 
-    _set_element(e.enabled,       cfg.enabled)
-    _apply_slider(e, 'priority',  slider_int,   1, 10,  cfg.priority,  spell_id)
-    _apply_slider(e, 'cooldown',  slider_float, 0.0, 5.0, cfg.cooldown, spell_id)
-    _apply_slider(e, 'charges',   slider_int,   1, 5,   cfg.charges,   spell_id)
-    _set_element(e.spell_type,    cfg.spell_type)
-    _set_element(e.target_mode,   cfg.target_mode)
-    _apply_slider(e, 'range',     slider_float, 1.0, 30.0, cfg.range,     spell_id)
-    _apply_slider(e, 'aoe_range', slider_float, 1.0, 20.0, cfg.aoe_range, spell_id)
-    _set_element(e.elite_only,    cfg.elite_only)
-    _set_element(e.boss_only,     cfg.boss_only)
-    _apply_slider(e, 'min_enemies', slider_int, 0, 15,  cfg.min_enemies, spell_id)
-    _set_element(e.self_cast,     cfg.self_cast)
-
-    _set_element(e.require_buff,  cfg.require_buff)
-    _set_element(e.buff_mode,     cfg.buff_mode)
-    _apply_slider(e, 'buff_stacks', slider_int, 1, 50, cfg.buff_stacks, spell_id)
-
-    _set_element(e.use_resource,      cfg.use_resource)
-    _set_element(e.resource_override, cfg.resource_override)
-    _set_element(e.resource_type,     cfg.resource_type)
-    _set_element(e.resource_mode,     cfg.resource_mode)
-    _apply_slider(e, 'resource_pct',  slider_int, 1, 100, cfg.resource_pct, spell_id)
-
-    _set_element(e.use_health,    cfg.use_health)
-    _set_element(e.health_mode,   cfg.health_mode)
-    _apply_slider(e, 'health_pct', slider_int, 1, 100, cfg.health_pct, spell_id)
-
-    _set_element(e.use_chain,     cfg.use_chain)
-    _apply_slider(e, 'chain_boost',    slider_int,   1, 9,    cfg.chain_boost,    spell_id)
-    _apply_slider(e, 'chain_duration', slider_float, 0.5, 10.0, cfg.chain_duration, spell_id)
-
-    _set_element(e.use_stack_pri,        cfg.use_stack_pri)
-    _set_element(e.stack_pri_use_buff,   cfg.stack_pri_use_buff)
-    _apply_slider(e, 'stack_pri_count',     slider_int,   1, 20,   cfg.stack_pri_count,     spell_id)
-    _apply_slider(e, 'stack_pri_below_pri', slider_int,   1, 10,   cfg.stack_pri_below_pri, spell_id)
-    _apply_slider(e, 'stack_pri_reset',     slider_float, 0.5, 15.0, cfg.stack_pri_reset,   spell_id)
-    _set_element(e.stack_pri_targeted,   cfg.stack_pri_targeted)
-    do
-        local sps = _get_stack_pri_buff_state(spell_id)
-        if type(cfg.stack_pri_buff_hash) == 'number' then sps.buff_hash = cfg.stack_pri_buff_hash end
-        if type(cfg.stack_pri_buff_name) == 'string' then
-            sps.buff_name = cfg.stack_pri_buff_name:gsub('%s*%(Not Active%).*$', ''):match('^%s*(.-)%s*$') or cfg.stack_pri_buff_name
-        end
-        sps.last_list_sig = nil
-        e.stack_pri_buff_combo = nil
-    end
-
-    _set_element(e.is_channeled,   cfg.is_channeled)
-    _set_element(e.cast_method,    cfg.cast_method)
-    _set_element(e.evade_aim_mode, cfg.evade_aim_mode)
-    _set_element(e.skill_slot,     cfg.skill_slot)
-    -- Map stored VK code back to combo index
     if type(cfg.evade_key) == 'number' then
         for i, code in ipairs(KEY_PRESS_CODES) do
-            if code == cfg.evade_key then _set_element(e.evade_key, i - 1); break end
+            if code == cfg.evade_key then p._evade_key_idx = i - 1; break end
         end
     end
     if type(cfg.force_hold_key) == 'number' then
         for i, code in ipairs(HOLD_KEY_CODES) do
-            if code == cfg.force_hold_key then _set_element(e.force_hold_key, i - 1); break end
+            if code == cfg.force_hold_key then p._force_hold_key_idx = i - 1; break end
         end
+    end
+
+    _pending[id] = p
+    _bump_spell_gen(spell_id)
+    _elements[id] = nil   -- force lazy rebuild on next get_elements
+
+    -- Side-table state (buff hash/name, chain target, stack-pri buff) lives
+    -- outside the widget set so it survives the rebuild, but we still need
+    -- to update it from the imported cfg.
+    if type(cfg.stack_pri_buff_hash) == 'number' then
+        local sps = _get_stack_pri_buff_state(spell_id)
+        sps.buff_hash = cfg.stack_pri_buff_hash
+    end
+    if type(cfg.stack_pri_buff_name) == 'string' then
+        local sps = _get_stack_pri_buff_state(spell_id)
+        sps.buff_name = cfg.stack_pri_buff_name:gsub('%s*%(Not Active%).*$', ''):match('^%s*(.-)%s*$') or cfg.stack_pri_buff_name
+        sps.last_list_sig = nil
     end
 
     if type(cfg.buff_hash) == 'number' then st.buff_hash = cfg.buff_hash end
@@ -795,21 +786,9 @@ function spell_config.apply(spell_id, cfg)
         if clean ~= '' then _buff_name_cache[tostring(spell_id)] = clean end
     end
 
-    -- Restore chain state
     if type(cfg.chain_target_id) == 'number' then cs.target_id = cfg.chain_target_id end
 
     st.last_list_sig = nil
-    e.buff_combo          = nil
-    e._buff_hash_for_combo = nil
-    e.chain_combo         = nil  -- will be rebuilt lazily with fresh spell list
-
-    -- Profile load changed the saved buff selection; force buff lists to rebuild
-    -- once on the next render so the saved buff appears in the dropdown.
-    e._buff_items          = nil
-    e._sp_buff_items       = nil
-    e._buff_list_v         = nil
-    e._sp_buff_list_v      = nil
-    e._sp_buff_hash_for_combo = nil
 end
 
 function spell_config.is_virtual(spell_id)
