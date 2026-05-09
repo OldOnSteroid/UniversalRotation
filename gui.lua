@@ -1,5 +1,5 @@
 local plugin_label   = 'magoogles_universal_rotation'
-local plugin_version = '1.0.12'
+local plugin_version = '1.0.13'
 console.print('Lua Plugin - Magoogles Universal Rotation - v' .. plugin_version)
 
 local gui = {}
@@ -34,6 +34,29 @@ local function si(min, max, default, key)
 end
 local function sf(min, max, default, key)
     return slider_float:new(min, max, default, get_hash(plugin_label .. '_' .. key))
+end
+
+-- input_text widgets sometimes raise a Lua error from inside :render when
+-- the user types into them in a state the host's widget binding does not
+-- like (reproducible: typing into "Cloud Sharing > Display Name" before
+-- the cloud listing has been fetched -- the host crashed the whole game).
+-- Bare :render calls let that error propagate up to the host, which kills
+-- the game.  spell_config.lua's buff_search has long wrapped its render in
+-- pcall for this exact reason; we now apply the same pattern to every
+-- input_text in gui.lua.  On render failure we drop a fresh-hash widget
+-- in place so the next frame starts clean instead of repeating the crash.
+local _input_gen = {}
+local function _safe_input_render(field_key, label, tooltip)
+    local el = gui.elements[field_key]
+    if not el then return end
+    local ok = pcall(function()
+        el:render(label, tooltip, false, '', '')
+    end)
+    if not ok then
+        _input_gen[field_key] = (_input_gen[field_key] or 0) + 1
+        local fresh = get_hash(plugin_label .. '_' .. field_key .. '_g' .. _input_gen[field_key])
+        gui.elements[field_key] = input_text:new(fresh)
+    end
 end
 
 gui.plugin_label   = plugin_label
@@ -151,10 +174,10 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
     if gui.elements.profiles_tree:push('Profiles') then
         if profile_names and #profile_names > 0 then
             gui.elements.profile_combo:render('Profile', profile_names, 'Switch between saved profiles for this class. Settings update immediately.')
-            -- Pass 5 args (require_button=false + empty strings) -- the
-            -- widget binding rejects nil for button_label/button_tooltip
-            -- and a Lua error here halts every later widget in the tree.
-            gui.elements.profile_rename:render('Rename Profile', 'Enter a new name for the active profile', false, '', '')
+            -- input_text:render is wrapped in pcall via _safe_input_render
+            -- (see the helper above) -- a host-side crash inside the widget
+            -- otherwise takes the whole game down.
+            _safe_input_render('profile_rename', 'Rename Profile', 'Enter a new name for the active profile')
             gui.elements.profile_rename_btn:render('Apply Rename', 'Save the new profile name from the field above.')
             gui.elements.new_profile:render('New Profile (copy current)', 'Create a new profile by copying all current settings')
             if #profile_names > 1 then
@@ -179,11 +202,7 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
                 )
             else
                 -- Not shared yet — show name input + share button (separate)
-                gui.elements.cloud_share_name:render(
-                    'Display Name',
-                    'Name shown in the cloud listing',
-                    false, '', ''
-                )
+                _safe_input_render('cloud_share_name', 'Display Name', 'Name shown in the cloud listing')
                 gui.elements.cloud_share_new_btn:render(
                     'Share Profile',
                     'Upload this profile to the cloud (leaves name blank to use the local profile name).'
@@ -232,10 +251,10 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
                 end
             end
 
-            gui.elements.cloud_import_code:render(
+            _safe_input_render(
+                'cloud_import_code',
                 'Share Code',
-                'Paste a share code from a friend (useful for cross-class profiles).  For your own class, pick one from the Cloud Profile dropdown above.',
-                false, '', ''
+                'Paste a share code from a friend (useful for cross-class profiles).  For your own class, pick one from the Cloud Profile dropdown above.'
             )
             gui.elements.cloud_import_code_btn:render(
                 'Import Profile',

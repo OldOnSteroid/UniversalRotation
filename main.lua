@@ -744,7 +744,11 @@ local function handle_profile_io()
     if gui.elements.profile_rename_btn and gui.elements.profile_rename_btn:get() then
         gui.elements.profile_rename_btn:set(false)
         local rename_el = gui.elements.profile_rename
-        local new_name = rename_el and rename_el:get() or ''
+        local new_name = ''
+        if rename_el and type(rename_el.get) == 'function' then
+            local ok, v = pcall(rename_el.get, rename_el)
+            if ok and type(v) == 'string' then new_name = v end
+        end
         if new_name and new_name ~= '' then
             _rename_profile(new_name)
             _last_profile_idx = _get_active_profile_index()
@@ -788,8 +792,16 @@ local function handle_profile_io()
     -- in the already-shared branch).
     if gui.elements.cloud_share_new_btn and gui.elements.cloud_share_new_btn:get() then
         gui.elements.cloud_share_new_btn:set(false)
+        -- input_text :get can also raise a host-side error when the widget's
+        -- internal state hasn't settled (mirrors the :render crash gated by
+        -- _safe_input_render in gui.lua).  pcall + fallback to the active
+        -- profile name keeps the share path alive instead of crashing.
         local cs_el = gui.elements.cloud_share_name
-        local display_name = cs_el and cs_el:get() or ''
+        local display_name = ''
+        if cs_el and type(cs_el.get) == 'function' then
+            local ok, v = pcall(cs_el.get, cs_el)
+            if ok and type(v) == 'string' then display_name = v end
+        end
         if not display_name or display_name == '' then display_name = _active_profile end
         console.print('[UniversalRotation] Uploading profile to cloud as "' .. display_name .. '"...')
         local json = _build_profile_json(ck, _active_profile)
@@ -851,7 +863,11 @@ local function handle_profile_io()
     if gui.elements.cloud_import_code_btn and gui.elements.cloud_import_code_btn:get() then
         gui.elements.cloud_import_code_btn:set(false)
         local ci_el = gui.elements.cloud_import_code
-        local code = ci_el and ci_el:get() or ''
+        local code = ''
+        if ci_el and type(ci_el.get) == 'function' then
+            local ok, v = pcall(ci_el.get, ci_el)
+            if ok and type(v) == 'string' then code = v end
+        end
         if code and code ~= '' then
             console.print('[UniversalRotation] Downloading cloud profile ' .. code .. '...')
             local result = cloud_share.download(code)
