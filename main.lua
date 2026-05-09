@@ -507,22 +507,33 @@ local function _export_profile(class_key, profile_name)
 end
 
 -- Apply a parsed profile data table to the current session.
--- skip_globals=true keeps the user's local global settings (scan range,
--- overlay position, etc.) when importing a profile from the cloud --
--- those are personal preferences not authored intent.  Local profile
--- switches still apply globals so each saved profile can carry its own.
-local function _apply_profile_data(data, display_name, silent, skip_globals)
+-- skip_ui_globals=true applies rotation-relevant globals (scan range,
+-- anim delay, min enemies) but skips personal UI settings (overlay
+-- position, debug mode).  Used for cloud imports so the uploader's
+-- rotation tuning takes effect while the downloader keeps their own
+-- screen layout.  Local profile switches pass skip_ui_globals=false
+-- to apply all globals.
+local function _apply_profile_data(data, display_name, silent, skip_ui_globals)
     if type(data) ~= 'table' then return false end
 
-    if type(data.global) == 'table' and not skip_globals then
+    if type(data.global) == 'table' then
+        -- Rotation globals: always apply — these are authored rotation
+        -- intent (scan range, cast delay, enemy thresholds) and must
+        -- match the uploader's tuning for the profile to work as designed.
         _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, data.global.scan_range)
         _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  data.global.anim_delay)
         _apply_global_slider('global_min_enemies', slider_int,   0,   15,   data.global.global_min_enemies)
-        _set_element(gui.elements.debug_mode,         data.global.debug_mode)
-        _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
-        _apply_global_slider('overlay_x',          slider_int,   0,   3000, data.global.overlay_x)
-        _apply_global_slider('overlay_y',          slider_int,   0,   3000, data.global.overlay_y)
-        _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
+
+        if not skip_ui_globals then
+            -- UI globals: only for local profile switches where the user
+            -- owns all settings.  Cloud imports skip these because overlay
+            -- position is screen-size-dependent and debug mode is a dev pref.
+            _set_element(gui.elements.debug_mode,         data.global.debug_mode)
+            _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
+            _apply_global_slider('overlay_x',          slider_int,   0,   3000, data.global.overlay_x)
+            _apply_global_slider('overlay_y',          slider_int,   0,   3000, data.global.overlay_y)
+            _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
+        end
     end
 
     if type(data.buff_history) == 'table' then
@@ -596,11 +607,17 @@ local function _import_from_json(json_str, profile_name)
     end
     _active_profile = profile_name
     local path = _profile_path_for(class_key, profile_name)
-    -- Strip globals from the on-disk copy so subsequent script reloads
-    -- (which call _import_profile -> _apply_profile_data with the default
-    -- skip_globals=false) cannot apply the uploader's scan range / overlay
-    -- position over the user's preferences.
-    data.global = nil
+    -- Strip personal UI globals (overlay position, debug mode) from the
+    -- on-disk copy so reloads don't clobber the downloader's screen layout.
+    -- Rotation globals (scan range, anim delay, min enemies) ARE kept so
+    -- subsequent reloads also restore the uploader's rotation tuning.
+    if type(data.global) == 'table' then
+        data.global.overlay_x        = nil
+        data.global.overlay_y        = nil
+        data.global.debug_mode       = nil
+        data.global.overlay_enabled  = nil
+        data.global.overlay_show_buffs = nil
+    end
     local sanitized_json = profile_io.to_json(data)
     pcall(function()
         local fw = io.open(path, 'w')
@@ -609,10 +626,9 @@ local function _import_from_json(json_str, profile_name)
     _save_manifest(class_key)
     _last_profile_idx = _get_active_profile_index()
     _set_element(gui.elements.profile_combo, _last_profile_idx)
-    -- Cloud imports skip globals: scan range / overlay position / debug
-    -- mode etc. are personal preferences, not authored rotation intent.
-    -- The downloader keeps their own global settings, but every per-spell
-    -- field (priority, range, AoE, conditions, ...) gets the uploader's.
+    -- Cloud imports apply rotation globals (scan range, anim delay, min
+    -- enemies) but skip UI globals (overlay position, debug mode) which
+    -- are personal/screen-dependent.  All per-spell settings are applied.
     return _apply_profile_data(data, profile_name, false, true)
 end
 
