@@ -385,12 +385,14 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
     e.self_cast:render('Self Cast', 'Cast on yourself — no target required (useful for buffs, movement, and AoE centered on player)')
     e.is_channeled:render('Channeled Spell', 'When this spell is actively channeling, the rotation holds off and lets it run. When the channel ends it re-casts automatically. Use for Incinerate, Flurry, and any hold-to-cast skill.')
 
-    -- Use While Traveling: only meaningful for Channeled + Key Press (the
-    -- pipeline that holds a key down).  Hidden otherwise so users don't
-    -- enable it on a spell where it has no effect.
-    if e.is_channeled:get() and (cast_method or 0) == 1 then
+    -- Use While Traveling: surfaced whenever Channeled Spell is on so the
+    -- option is discoverable without users having to flip cast_method
+    -- first.  Only actually does something when paired with Cast Method =
+    -- Key Press (which is what holds the skill-bar key down for
+    -- Whirlwind / Flurry); the tooltip spells that out.
+    if e.is_channeled:get() then
         e.use_while_traveling:render('Use While Traveling',
-            'Keep the channel running even when no enemies are in range, and stop the auto-aim cursor warp so orbwalker (or your manual mouse) controls travel direction.  Pair with Whirlwind / Flurry-style hold-to-cast skills.  Resource and health gates still apply, so the channel still pauses when you run out of fury / mana.')
+            'For hold-to-cast channels like Whirlwind / Flurry.  Keep the channel running even when no enemies are in range, and stop the auto-aim cursor warp so orbwalker (or your manual mouse) controls travel direction.  Resource and health gates still apply, so the channel pauses when you run out of fury / mana.  REQUIRES Cast Method = Key Press with the skill-bar key for the channel selected -- the rotation only holds keys, not Normal-API casts.')
     end
 
     local is_self = e.self_cast:get()
