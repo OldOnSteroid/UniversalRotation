@@ -385,24 +385,27 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
     e.self_cast:render('Self Cast', 'Cast on yourself — no target required (useful for buffs, movement, and AoE centered on player)')
     e.is_channeled:render('Channeled Spell', 'When this spell is actively channeling, the rotation holds off and lets it run. When the channel ends it re-casts automatically. Use for Incinerate, Flurry, and any hold-to-cast skill.')
 
+    -- Channeled-spell pipeline only does anything useful with Cast Method
+    -- = Key Press (it holds the skill-bar key down).  With Normal or
+    -- Force-Stand-Still selected the rotation either does nothing
+    -- (Normal: spell silently spam-casts at GCD via the API instead of
+    -- channeling) or sends the wrong key.  Most common setup mistake by
+    -- far -- surface it as a header line so users can't miss it.
+    if e.is_channeled:get() and (cast_method or 0) ~= 1 then
+        render_menu_header(
+            '!! Channeled Spell has no effect with Cast Method = "'
+            .. (CAST_METHOD_LABELS[(cast_method or 0) + 1] or '?')
+            .. '".  Switch Cast Method to "Key Press" and pick your '
+            .. 'skill-bar key for the channel to actually engage.')
+    end
+
     -- Use While Traveling: surfaced whenever Channeled Spell is on so the
     -- option is discoverable without users having to flip cast_method
     -- first.  Only actually does something when paired with Cast Method =
-    -- Key Press (which is what holds the skill-bar key down for
-    -- Whirlwind / Flurry); the tooltip spells that out.
+    -- Key Press; the tooltip and the warning above spell that out.
     if e.is_channeled:get() then
         e.use_while_traveling:render('Use While Traveling',
             'For hold-to-cast channels like Whirlwind / Flurry.  Keep the channel running even when no enemies are in range -- resource and health gates still apply, so the channel pauses when you run out of fury / mana.  REQUIRES Cast Method = Key Press with the skill-bar key for the channel selected; the rotation only holds keys, not Normal-API casts.  Pair with Aim Direction = No Aim (cursor as-is) for orbwalker / manual travel; pick Towards Enemy or Orbwalker Direction if you want auto-aim while channeling.')
-        -- Inline warning when the user has the option on but the rest of
-        -- the config doesn't actually engage the channeled key-hold
-        -- pipeline -- by far the most common setup mistake (the spell
-        -- silently spam-casts via Normal API instead).
-        if e.use_while_traveling:get() and (cast_method or 0) ~= 1 then
-            render_menu_header(
-                '!! Use While Traveling has no effect: Cast Method must be set to '
-                .. '"Key Press" with the skill-bar key selected.  Currently using '
-                .. '"' .. (CAST_METHOD_LABELS[(cast_method or 0) + 1] or '?') .. '".')
-        end
     end
 
     local is_self = e.self_cast:get()

@@ -18,6 +18,14 @@ local _chain_boosts = {}   -- keyed by target spell_id (number)
 -- Channeled spells: [spell_id] = vk_code currently held down
 local _channeled_held = {}
 
+-- Debug: per-spell last-seen result of the buff-condition gate.  When
+-- debug_mode is on, every transition is console-printed so users can see
+-- whether the gate is firing.  Most "spell spams in Missing mode while
+-- the buff is up" reports are buff_hash mismatches (user picked the
+-- skill hash instead of the buff-effect hash) -- this surfaces that
+-- without the user having to open the debug log file.
+local _last_buff_has = {}
+
 -- Channeled spells: [spell_id] = monotonic time of last re-engage attempt.
 -- D4 can drop a channel for many reasons (CC, animation lock, dash, item
 -- pickup) while our OS-level key is still held -- without periodic
@@ -879,6 +887,18 @@ function rotation_engine.tick(equipped_ids, settings)
         if cfg.require_buff then
             local buff_mode = cfg.buff_mode or 0
             local has = _player_has_buff(cfg.buff_hash, cfg.buff_stacks)
+            if settings.debug then
+                local key = tostring(spell_id) .. ':' .. tostring(cfg.buff_hash or 0)
+                if _last_buff_has[key] ~= has then
+                    console.print(string.format(
+                        '[UniversalRota] %s buff gate: hash=%s mode=%s stacks>=%d has=%s',
+                        spell_name, tostring(cfg.buff_hash or 0),
+                        buff_mode == 1 and 'Missing' or 'Active',
+                        cfg.buff_stacks or 1,
+                        tostring(has)))
+                    _last_buff_has[key] = has
+                end
+            end
             if buff_mode == 0 then
                 -- Active mode: only cast when buff is present at >= min stacks
                 if not has then

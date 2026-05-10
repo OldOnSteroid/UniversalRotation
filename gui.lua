@@ -1,5 +1,5 @@
 local plugin_label   = 'magoogles_universal_rotation'
-local plugin_version = '1.0.25'
+local plugin_version = '1.0.26'
 console.print('Lua Plugin - Magoogles Universal Rotation - v' .. plugin_version)
 
 local gui = {}
@@ -150,6 +150,13 @@ gui.elements = {
 
     -- Buff filter checkboxes (controls which categories appear in buff dropdowns)
     buff_filter_tree    = tree_node:new(2),
+    -- One-shot diagnostic button: prints every buff currently on the
+    -- player (hash + name + stacks) to console.  Use to verify a
+    -- spell's "Buff Condition" hash actually matches what's active --
+    -- the most common Missing-mode bug is the user picking the SKILL
+    -- entry from the dropdown instead of the buff-EFFECT entry, which
+    -- have different hashes.
+    bf_dump_buffs       = cb(false, 'bf_dump_buffs'),
     bf_paragon          = cb(false, 'bf_paragon'),
     bf_talent           = cb(false, 'bf_talent'),
     bf_item             = cb(false, 'bf_item'),
@@ -318,6 +325,8 @@ gui.render = function(spell_config, equipped_ids, all_known_ids, profile_names, 
         -- Buff dropdown filters
         if gui.elements.buff_filter_tree:push('Buff Dropdown Filters') then
             render_menu_header('Skill buffs are always shown. Toggle extra categories below. Tip: use the "Search Buffs" field inside each spell\'s settings to find any buff by name across all categories without changing these filters.')
+            gui.elements.bf_dump_buffs:render('Print Active Buffs to Console',
+                'Dump every buff currently on the player (hash + name + stacks).  Use to verify a spell\'s Buff Condition hash matches what the game is reporting -- the most common cause of "Missing-mode keeps spamming while my buff is up" is picking the wrong dropdown entry (skill vs buff effect have different hashes).')
             gui.elements.bf_paragon:render('Show Paragon',         'Include paragon board buffs')
             gui.elements.bf_talent:render('Show Talent',           'Include talent tree buffs')
             gui.elements.bf_item:render('Show Item / Gear',        'Include gear slot and item affix buffs')
