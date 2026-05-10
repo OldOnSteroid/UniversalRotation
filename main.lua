@@ -174,6 +174,12 @@ end
 
 local function _set_element(el, val)
     if not el then return end
+    -- Skip on nil so a missing field in an older / stripped profile
+    -- doesn't clobber the widget's existing host-persisted value.
+    -- _apply_profile_data calls _set_element for every global on every
+    -- import, including ones the file may legitimately omit (e.g.
+    -- post-strip cloud download where personal globals were removed).
+    if val == nil then return end
     if type(el.set) == 'function' then pcall(el.set, el, val); return end
     if type(el.set_value) == 'function' then pcall(el.set_value, el, val); return end
 end
@@ -243,6 +249,16 @@ local _cloud_browse = {
 -- player switches characters or after a successful share, so the next
 -- handle_class_profiles tick refreshes the listing for the new context.
 local _cloud_auto_loaded_class = nil
+
+-- Autosave: persist the active profile to disk on a throttle so user
+-- customizations made AFTER a cloud download (or any other profile load)
+-- survive a script reload.  Without this, the on-disk file stays the
+-- pristine downloaded copy and _import_profile clobbers in-memory edits
+-- on next load.  We only write when the freshly-built profile JSON
+-- diverges from the last snapshot, so an idle script doesn't churn disk.
+local _last_saved_json   = nil
+local _last_autosave_t   = 0
+local AUTOSAVE_INTERVAL  = 10.0   -- seconds between dirty-checks
 
 -- Forward-declare the cloud-listing helpers so handle_profile_io can call
 -- them; the actual definitions live further down next to the other
@@ -458,7 +474,39 @@ local function _get_active_profile_index()
     return 0
 end
 
-local function _build_profile_json(class_key, profile_name)
+-- Personal globals: persisted locally so users keep their UI/keybind/filter
+-- preferences across reloads, but stripped from cloud uploads (the receiver
+-- doesn't want the uploader's overlay coords or debug toggle) and stripped
+-- again on cloud download for backwards compatibility with profiles uploaded
+-- by older versions that didn't strip on send.  Anything NOT in this list
+-- (scan_range, anim_delay, global_min_enemies, allow_movement, respect_orb)
+-- is rotation behavior and IS shared.
+local _PERSONAL_GLOBAL_FIELDS = {
+    'debug_mode', 'overlay_enabled', 'overlay_x', 'overlay_y', 'overlay_show_buffs',
+    'external_target_override',
+    'hold_location_enabled', 'hold_location_range',
+    'bf_paragon', 'bf_talent', 'bf_item', 'bf_npc',
+    'bf_bsk', 'bf_dungeon', 'bf_passive', 'bf_internal',
+}
+
+local function _strip_personal_globals(data)
+    if type(data) ~= 'table' or type(data.global) ~= 'table' then return end
+    for _, f in ipairs(_PERSONAL_GLOBAL_FIELDS) do data.global[f] = nil end
+end
+
+local function _cb_get(name, default)
+    local el = gui.elements[name]
+    if el and type(el.get) == 'function' then
+        local ok, v = pcall(el.get, el)
+        if ok then return v end
+    end
+    return default
+end
+
+-- for_share=true strips personal/UI globals before encoding, so the cloud
+-- upload only carries rotation behavior + spell config.  Default false =
+-- full local snapshot (used by autosave, _export_profile, manifest writes).
+local function _build_profile_json(class_key, profile_name, for_share)
     class_key    = class_key    or _class_key()
     profile_name = profile_name or _active_profile
     local data = {
@@ -466,18 +514,34 @@ local function _build_profile_json(class_key, profile_name)
         class   = class_key,
         profile = profile_name,
         global  = {
-            scan_range         = gui.elements.scan_range:get(),
-            anim_delay         = gui.elements.anim_delay:get(),
-            global_min_enemies = gui.elements.global_min_enemies and gui.elements.global_min_enemies:get() or 0,
-            debug_mode         = gui.elements.debug_mode:get(),
-            overlay_enabled    = gui.elements.overlay_enabled:get(),
-            overlay_x          = gui.elements.overlay_x:get(),
-            overlay_y          = gui.elements.overlay_y:get(),
-            overlay_show_buffs = gui.elements.overlay_show_buffs and gui.elements.overlay_show_buffs:get() or false,
+            -- Rotation behavior: shared + persisted locally
+            scan_range               = gui.elements.scan_range:get(),
+            anim_delay               = gui.elements.anim_delay:get(),
+            global_min_enemies       = gui.elements.global_min_enemies and gui.elements.global_min_enemies:get() or 0,
+            allow_movement           = _cb_get('allow_movement', false),
+            respect_orb              = _cb_get('respect_orb', true),
+            -- Personal / UI: persisted locally, stripped on share/import
+            debug_mode               = gui.elements.debug_mode:get(),
+            overlay_enabled          = gui.elements.overlay_enabled:get(),
+            overlay_x                = gui.elements.overlay_x:get(),
+            overlay_y                = gui.elements.overlay_y:get(),
+            overlay_show_buffs       = gui.elements.overlay_show_buffs and gui.elements.overlay_show_buffs:get() or false,
+            external_target_override = _cb_get('external_target_override', false),
+            hold_location_enabled    = _cb_get('hold_location_enabled', false),
+            hold_location_range      = (gui.elements.hold_location_range and gui.elements.hold_location_range:get()) or 15.0,
+            bf_paragon               = _cb_get('bf_paragon', false),
+            bf_talent                = _cb_get('bf_talent', false),
+            bf_item                  = _cb_get('bf_item', false),
+            bf_npc                   = _cb_get('bf_npc', false),
+            bf_bsk                   = _cb_get('bf_bsk', false),
+            bf_dungeon               = _cb_get('bf_dungeon', false),
+            bf_passive               = _cb_get('bf_passive', false),
+            bf_internal              = _cb_get('bf_internal', false),
         },
         spells       = {},
         buff_history = buff_provider.export_history(),
     }
+    if for_share then _strip_personal_globals(data) end
     for _, sid in ipairs(all_known_ids) do
         data.spells[tostring(sid)] = spell_config.get(sid)
     end
@@ -499,6 +563,7 @@ local function _export_profile(class_key, profile_name)
 
     if ok then
         console.print('[UniversalRotation] Saved profile: ' .. profile_name .. ' (' .. path .. ')')
+        if profile_name == _active_profile then _last_saved_json = json end
     else
         console.print('[UniversalRotation] Save failed: ' .. tostring(err))
     end
@@ -516,14 +581,31 @@ local function _apply_profile_data(data, display_name, silent, skip_globals)
     if type(data) ~= 'table' then return false end
 
     if type(data.global) == 'table' and not skip_globals then
-        _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, data.global.scan_range)
-        _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  data.global.anim_delay)
-        _apply_global_slider('global_min_enemies', slider_int,   0,   15,   data.global.global_min_enemies)
-        _set_element(gui.elements.debug_mode,         data.global.debug_mode)
-        _set_element(gui.elements.overlay_enabled,    data.global.overlay_enabled)
-        _apply_global_slider('overlay_x',          slider_int,   0,   3000, data.global.overlay_x)
-        _apply_global_slider('overlay_y',          slider_int,   0,   3000, data.global.overlay_y)
-        _set_element(gui.elements.overlay_show_buffs, data.global.overlay_show_buffs)
+        local g = data.global
+        -- Rotation behavior
+        _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, g.scan_range)
+        _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  g.anim_delay)
+        _apply_global_slider('global_min_enemies', slider_int,   0,   15,   g.global_min_enemies)
+        _set_element(gui.elements.allow_movement,           g.allow_movement)
+        _set_element(gui.elements.respect_orb,              g.respect_orb)
+        -- Personal / UI
+        _set_element(gui.elements.debug_mode,               g.debug_mode)
+        _set_element(gui.elements.overlay_enabled,          g.overlay_enabled)
+        _apply_global_slider('overlay_x',          slider_int,   0,   3000, g.overlay_x)
+        _apply_global_slider('overlay_y',          slider_int,   0,   3000, g.overlay_y)
+        _set_element(gui.elements.overlay_show_buffs,       g.overlay_show_buffs)
+        _set_element(gui.elements.external_target_override, g.external_target_override)
+        _set_element(gui.elements.hold_location_enabled,    g.hold_location_enabled)
+        _apply_global_slider('hold_location_range',  slider_float, 3.0, 60.0, g.hold_location_range)
+        -- Buff filter checkboxes
+        _set_element(gui.elements.bf_paragon,  g.bf_paragon)
+        _set_element(gui.elements.bf_talent,   g.bf_talent)
+        _set_element(gui.elements.bf_item,     g.bf_item)
+        _set_element(gui.elements.bf_npc,      g.bf_npc)
+        _set_element(gui.elements.bf_bsk,      g.bf_bsk)
+        _set_element(gui.elements.bf_dungeon,  g.bf_dungeon)
+        _set_element(gui.elements.bf_passive,  g.bf_passive)
+        _set_element(gui.elements.bf_internal, g.bf_internal)
     end
 
     if type(data.buff_history) == 'table' then
@@ -573,6 +655,11 @@ local function _import_profile(class_key, profile_name, silent, skip_globals)
         return false
     end
 
+    -- Seed the autosave baseline so we don't immediately re-write a
+    -- file we just loaded.  The next autosave tick will only write if
+    -- the user has actually customized something since this load.
+    if profile_name == _active_profile then _last_saved_json = json end
+
     return _apply_profile_data(data, profile_name, silent, skip_globals)
 end
 
@@ -587,6 +674,13 @@ local function _import_from_json(json_str, profile_name)
     end
     -- Save to disk so the profile persists across reloads
     local class_key = _class_key()
+    -- Persist any in-memory customizations on the previously-active
+    -- profile before we switch away from it -- otherwise the user's
+    -- edits to the prior profile would be lost the moment they import
+    -- a new cloud profile.  Skip when re-importing into the same slot.
+    if _active_profile and _active_profile ~= profile_name then
+        _export_profile(class_key, _active_profile)
+    end
     -- Add to profile list if not already present
     local found = false
     for _, n in ipairs(_profile_names) do
@@ -597,22 +691,23 @@ local function _import_from_json(json_str, profile_name)
     end
     _active_profile = profile_name
     local path = _profile_path_for(class_key, profile_name)
-    -- Strip personal UI globals (overlay position, debug mode) from the
-    -- on-disk copy so reloads don't clobber the downloader's screen layout.
-    -- Rotation globals (scan range, anim delay, min enemies) ARE kept so
-    -- subsequent reloads also restore the uploader's rotation tuning.
-    if type(data.global) == 'table' then
-        data.global.overlay_x        = nil
-        data.global.overlay_y        = nil
-        data.global.debug_mode       = nil
-        data.global.overlay_enabled  = nil
-        data.global.overlay_show_buffs = nil
-    end
+    -- Strip personal/UI globals (overlay coords, debug mode, keybind-style
+    -- toggles, buff filter prefs) from the on-disk copy so reloads don't
+    -- clobber the downloader's screen layout or display preferences.
+    -- Rotation globals (scan range, anim delay, min enemies, allow_movement,
+    -- respect_orb) ARE kept so reloads also restore the uploader's rotation
+    -- tuning.  Modern uploads strip personal globals before sending, but we
+    -- still strip on receive in case the server holds an older payload.
+    _strip_personal_globals(data)
     local sanitized_json = profile_io.to_json(data)
     pcall(function()
         local fw = io.open(path, 'w')
         if fw then fw:write(sanitized_json); fw:close() end
     end)
+    -- Seed the autosave baseline -- what's on disk now matches what we
+    -- just imported.  Any customization the user makes from here on
+    -- will diverge from this snapshot and trigger an autosave write.
+    _last_saved_json = sanitized_json
     _save_manifest(class_key)
     _last_profile_idx = _get_active_profile_index()
     _set_element(gui.elements.profile_combo, _last_profile_idx)
@@ -622,9 +717,15 @@ local function _import_from_json(json_str, profile_name)
     -- screen-size-dependent.  Per-spell settings are applied via skip_globals=true
     -- inside _apply_profile_data, so the inline block below handles only globals.
     if type(data.global) == 'table' then
-        _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, data.global.scan_range)
-        _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  data.global.anim_delay)
-        _apply_global_slider('global_min_enemies', slider_int,   0,   15,   data.global.global_min_enemies)
+        local g = data.global
+        _apply_global_slider('scan_range',         slider_float, 5.0, 30.0, g.scan_range)
+        _apply_global_slider('anim_delay',         slider_float, 0.0, 0.5,  g.anim_delay)
+        _apply_global_slider('global_min_enemies', slider_int,   0,   15,   g.global_min_enemies)
+        -- Apply only when the uploader actually set these (older shares
+        -- omit them); _set_element no-ops on nil so the receiver's local
+        -- toggle survives if the field is absent.
+        if g.allow_movement ~= nil then _set_element(gui.elements.allow_movement, g.allow_movement) end
+        if g.respect_orb    ~= nil then _set_element(gui.elements.respect_orb,    g.respect_orb)    end
     end
     return _apply_profile_data(data, profile_name, false, true)
 end
@@ -751,6 +852,38 @@ local function _rename_profile(new_name, class_key)
     console.print('[UniversalRotation] Renamed profile: ' .. old_name .. ' → ' .. new_name)
 end
 
+-- Throttled autosave.  Runs every AUTOSAVE_INTERVAL seconds; rebuilds
+-- the active profile's JSON, compares against the last snapshot we
+-- wrote/loaded, and only writes when the user has actually changed
+-- something.  This is what keeps customizations on a cloud-downloaded
+-- (or any other) profile alive across reloads -- without it, the
+-- on-disk file stays the pristine downloaded copy and tweaks vanish.
+local function _autosave_if_dirty()
+    if not _active_profile or _active_profile == '' then return end
+    local ck = _class_key()
+    if not ck or ck == '' or ck == 'unknown' then return end
+
+    local now = get_time_since_inject()
+    if now - _last_autosave_t < AUTOSAVE_INTERVAL then return end
+    _last_autosave_t = now
+
+    -- _last_saved_json being nil means no prior import or export has
+    -- seeded a baseline (e.g. fresh install with no profile file, or
+    -- _import_profile silently failed because the file was missing).
+    -- In that case treat the in-memory state as dirty so the first
+    -- autosave creates the file and seeds the baseline going forward.
+    local json = _build_profile_json(ck, _active_profile)
+    if json == _last_saved_json then return end
+
+    local path = _profile_path_for(ck, _active_profile)
+    local ok = pcall(function()
+        local f = assert(io.open(path, 'w'))
+        f:write(json)
+        f:close()
+    end)
+    if ok then _last_saved_json = json end
+end
+
 local function handle_profile_io()
     -- Manual export/import/reload buttons removed -- cloud sharing is the
     -- only blessed sync path now.  _export_profile / _import_profile are
@@ -809,7 +942,9 @@ local function handle_profile_io()
     -- Update existing share (checkbox button — only visible when profile is already shared)
     if gui.elements.cloud_share_btn and gui.elements.cloud_share_btn:get() then
         console.print('[UniversalRotation] Uploading profile to cloud...')
-        local json = _build_profile_json(ck, _active_profile)
+        -- for_share=true strips the uploader's personal/UI globals (overlay
+        -- coords, debug toggle, buff filter prefs, etc.) before the upload.
+        local json = _build_profile_json(ck, _active_profile, true)
         local result = cloud_share.share(ck, _active_profile, json, nil)
         if result.ok then
             console.print('[UniversalRotation] Cloud profile updated!  Code: ' .. result.code)
@@ -839,7 +974,8 @@ local function handle_profile_io()
         end
         if not display_name or display_name == '' then display_name = _active_profile end
         console.print('[UniversalRotation] Uploading profile to cloud as "' .. display_name .. '"...')
-        local json = _build_profile_json(ck, _active_profile)
+        -- for_share=true: see the Update branch above for rationale.
+        local json = _build_profile_json(ck, _active_profile, true)
         local result = cloud_share.share(ck, _active_profile, json, display_name)
         if result.ok then
             console.print('[UniversalRotation] Profile shared!  Code: ' .. result.code
@@ -969,6 +1105,12 @@ local function handle_profile_io()
         end
         gui.elements.hold_location_set_btn:set(false)
     end
+
+    -- Persist any pending GUI edits to disk on a throttle.  Without
+    -- this, customizations made after a cloud download (or any
+    -- profile load) are lost on reload because the on-disk file
+    -- still holds the original imported copy.
+    _autosave_if_dirty()
 end
 
 local _cloud_ready = false
