@@ -392,7 +392,17 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
     -- Whirlwind / Flurry); the tooltip spells that out.
     if e.is_channeled:get() then
         e.use_while_traveling:render('Use While Traveling',
-            'For hold-to-cast channels like Whirlwind / Flurry.  Keep the channel running even when no enemies are in range, and stop the auto-aim cursor warp so orbwalker (or your manual mouse) controls travel direction.  Resource and health gates still apply, so the channel pauses when you run out of fury / mana.  REQUIRES Cast Method = Key Press with the skill-bar key for the channel selected -- the rotation only holds keys, not Normal-API casts.')
+            'For hold-to-cast channels like Whirlwind / Flurry.  Keep the channel running even when no enemies are in range -- resource and health gates still apply, so the channel pauses when you run out of fury / mana.  REQUIRES Cast Method = Key Press with the skill-bar key for the channel selected; the rotation only holds keys, not Normal-API casts.  Pair with Aim Direction = No Aim (cursor as-is) for orbwalker / manual travel; pick Towards Enemy or Orbwalker Direction if you want auto-aim while channeling.')
+        -- Inline warning when the user has the option on but the rest of
+        -- the config doesn't actually engage the channeled key-hold
+        -- pipeline -- by far the most common setup mistake (the spell
+        -- silently spam-casts via Normal API instead).
+        if e.use_while_traveling:get() and (cast_method or 0) ~= 1 then
+            render_menu_header(
+                '!! Use While Traveling has no effect: Cast Method must be set to '
+                .. '"Key Press" with the skill-bar key selected.  Currently using '
+                .. '"' .. (CAST_METHOD_LABELS[(cast_method or 0) + 1] or '?') .. '".')
+        end
     end
 
     local is_self = e.self_cast:get()

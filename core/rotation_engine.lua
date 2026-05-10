@@ -18,6 +18,16 @@ local _chain_boosts = {}   -- keyed by target spell_id (number)
 -- Channeled spells: [spell_id] = vk_code currently held down
 local _channeled_held = {}
 
+-- Channeled spells: [spell_id] = monotonic time of last re-engage attempt.
+-- D4 can drop a channel for many reasons (CC, animation lock, dash, item
+-- pickup) while our OS-level key is still held -- without periodic
+-- re-presses the channel never resumes after such an interrupt.  The
+-- channeled pipeline checks get_active_spell_id() each tick and re-presses
+-- the key when the in-game channel doesn't match what we expect, throttled
+-- via this table so a transient mismatch can't burn the host's input queue.
+local _channeled_repress_t = {}
+local CHANNELED_REPRESS_THROTTLE = 0.20  -- seconds between re-press attempts
+
 -- Co-existence with the host's auto-dodge plugin (the `evade` global --
 -- HordeDev / EvadeRevamped / Paladin-style dodgers all hook into it).
 --
@@ -71,6 +81,7 @@ local function _release_all_channeled()
         logger.log('channeled: KEY UP (release) spell=' .. tostring(spell_id))
     end
     _channeled_held = {}
+    _channeled_repress_t = {}
 end
 
 local function _player_has_buff(required_hash, min_stacks)
@@ -711,56 +722,57 @@ function rotation_engine.tick(equipped_ids, settings)
     end)
 
     -- Channeled spell pass: runs every frame regardless of GCD.
-    -- Holds/releases the configured key based on conditions; other spells are unaffected.
+    -- Holds / re-presses / releases the configured key based on conditions.
+    -- Cursor behavior is fully driven by the spell's Aim Direction setting
+    -- (No Aim / Towards Enemy / Orbwalker Direction); pre-1.0.25 the
+    -- "Use While Traveling" flag also suppressed cursor warps, but that
+    -- collapsed three valid configs into one.  Users who want manual /
+    -- orbwalker travel pick Aim Direction = No Aim and the warp simply
+    -- doesn't fire (orbwalker uses internal API calls, not the OS cursor,
+    -- so it's unaffected either way).
+    local function _channeled_aim(entry)
+        local aim_mode = entry.cfg.evade_aim_mode or 0
+        if aim_mode == 0 or not player_pos then return end
+        local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
+        if not aim_pos then return end
+        local sx, sy = _world_to_screen(aim_pos)
+        if sx and sy then utility.send_mouse_move(sx, sy) end
+    end
     for _, entry in ipairs(spell_list) do
         if not entry.is_virtual and entry.cfg.is_channeled then
             local vk       = entry.cfg.evade_key or 0x20
             local held     = _channeled_held[entry.spell_id] ~= nil
             local cond_met = _channeled_conditions_met(entry, targets, player_pos, settings, held)
-            -- Travel mode suppresses the cursor warp entirely so orbwalker's
-            -- internal pathing OR the player's physical mouse can drive
-            -- travel direction without the rotation snapping the OS cursor
-            -- onto a nearby enemy every frame.
-            local travel_mode = entry.cfg.use_while_traveling == true
             if cond_met and not held then
-                -- Aim cursor toward enemy before holding key
-                if not travel_mode then
-                    pcall(function()
-                        local aim_mode = entry.cfg.evade_aim_mode or 0
-                        if aim_mode ~= 0 and player_pos then
-                            local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
-                            if aim_pos then
-                                local sx, sy = _world_to_screen(aim_pos)
-                                if sx and sy then
-                                    logger.log(string.format('channeled: cursor -> (%d, %d)', sx, sy))
-                                    utility.send_mouse_move(sx, sy)
-                                end
-                            end
-                        end
-                    end)
-                end
+                pcall(_channeled_aim, entry)
                 pcall(function() utility.send_key_down(vk) end)
                 _channeled_held[entry.spell_id] = vk
-                logger.log('channeled: KEY DOWN spell=' .. tostring(entry.spell_id) .. (travel_mode and ' [travel]' or ''))
+                _channeled_repress_t[entry.spell_id] = get_time_since_inject()
+                logger.log('channeled: KEY DOWN spell=' .. tostring(entry.spell_id))
             elseif cond_met and held then
-                -- Continuously re-aim toward enemy while channeling
-                if not travel_mode then
-                    pcall(function()
-                        local aim_mode = entry.cfg.evade_aim_mode or 0
-                        if aim_mode ~= 0 and player_pos then
-                            local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
-                            if aim_pos then
-                                local sx, sy = _world_to_screen(aim_pos)
-                                if sx and sy then
-                                    utility.send_mouse_move(sx, sy)
-                                end
-                            end
-                        end
-                    end)
+                pcall(_channeled_aim, entry)
+                -- Re-engage if D4 dropped the channel (CC, animation lock,
+                -- dash, item pickup, etc.) but our state still says held.
+                -- Throttled so a transient active_spell_id mismatch during
+                -- normal channel cycling doesn't spam keypress events.
+                local now = get_time_since_inject()
+                local last_repress = _channeled_repress_t[entry.spell_id] or 0
+                if now - last_repress >= CHANNELED_REPRESS_THROTTLE then
+                    local active_id = nil
+                    pcall(function() active_id = lp:get_active_spell_id() end)
+                    if active_id ~= entry.spell_id then
+                        pcall(function() utility.send_key_up(vk) end)
+                        pcall(function() utility.send_key_down(vk) end)
+                        _channeled_repress_t[entry.spell_id] = now
+                        logger.log(string.format(
+                            'channeled: RE-ENGAGE spell=%s (active=%s)',
+                            tostring(entry.spell_id), tostring(active_id)))
+                    end
                 end
             elseif not cond_met and held then
                 pcall(function() utility.send_key_up(vk) end)
                 _channeled_held[entry.spell_id] = nil
+                _channeled_repress_t[entry.spell_id] = nil
                 logger.log('channeled: KEY UP spell=' .. tostring(entry.spell_id))
             end
         end
@@ -769,13 +781,14 @@ function rotation_engine.tick(equipped_ids, settings)
     -- GCD and orbwalker guard only the normal (non-channeled) cast loop below
     if get_time_since_inject() < _gcd_until then return false end
 
-    -- While a channeled spell is actively held, suppress the normal cast loop.
-    -- API casts (try_cast) during a channel can interrupt or conflict with the
-    -- held key, causing stutter and direction loss.
-    if next(_channeled_held) ~= nil then
-        logger.log('tick: channeled spell held, skipping normal loop')
-        return false
-    end
+    -- Pre-1.0.25 we suppressed the entire normal cast loop while any
+    -- channeled key was held, on the theory that API casts could interrupt
+    -- the channel.  That broke a documented D4 mechanic: shouts, Iron
+    -- Skin, Berserker's Wrath, and other instant abilities CAN fire
+    -- mid-Whirlwind without ending the channel.  We now let the normal
+    -- loop run -- the loop already skips entries with is_channeled=true
+    -- (so the channeled spell itself isn't re-cast as an API call), and
+    -- non-channeled cast paths don't release the OS-held key either.
 
     if settings and settings.respect_orb then
         local orb_mode_val = 0
