@@ -104,6 +104,17 @@ local function _player_has_buff(required_hash, min_stacks)
                 elseif type(b.stacks) == 'number' then
                     stacks = b.stacks
                 end
+                -- Non-stacking buffs (Rallying Cry, Challenging Shout,
+                -- most warcries / shouts in D4) report stacks=0 from the
+                -- host's API even when active -- the buff is present-or-
+                -- absent with no stack counter.  Without this clamp the
+                -- min_stacks=1 default check (stacks >= 1) would always
+                -- fail for those, making "Active" mode never fire and
+                -- "Missing" mode always fire even when the buff is on.
+                -- Presence in the buff list is enough to count as one
+                -- effective stack; real stacking buffs still report
+                -- their actual count (>= 1) and pass through unchanged.
+                if stacks < 1 then stacks = 1 end
                 return stacks >= min_stacks
             end
         end
