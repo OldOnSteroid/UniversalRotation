@@ -201,7 +201,13 @@ local function _apply_global_slider(field_name, ctor, min, max, val)
     if cur ~= nil and math.abs((cur or 0) - (val or 0)) < 1e-6 then return end
     _global_apply_gen = _global_apply_gen + 1
     local fresh_hash = get_hash('magoogles_universal_rotation_' .. field_name .. '_g' .. _global_apply_gen)
-    gui.elements[field_name] = ctor(min, max, val, fresh_hash)
+    -- ctor is the slider_int / slider_float CLASS table (a table, not a
+    -- function), so construction is `ctor:new(...)` not `ctor(...)`.
+    -- Latent bug pre-1.0.21 -- never triggered because every real apply
+    -- found cur == val and short-circuited above; hold_location_range
+    -- in 1.0.21 was the first field where on-disk value reliably
+    -- diverged from the widget's constructor default.
+    gui.elements[field_name] = ctor:new(min, max, val, fresh_hash)
 end
 
 local function _class_key()
