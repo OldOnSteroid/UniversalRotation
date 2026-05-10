@@ -1,5 +1,5 @@
 local plugin_label   = 'magoogles_universal_rotation'
-local plugin_version = '1.0.20'
+local plugin_version = '1.0.21'
 console.print('Lua Plugin - Magoogles Universal Rotation - v' .. plugin_version)
 
 local gui = {}

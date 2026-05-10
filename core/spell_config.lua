@@ -245,6 +245,14 @@ local function get_elements(spell_id)
         -- Channeled: when active, rotation holds off so it doesn't interrupt the cast
         is_channeled    = checkbox:new(pv('is_channeled', false), h('is_channeled')),
 
+        -- Use While Traveling: only meaningful for channeled key-press spells
+        -- (Whirlwind, Flurry).  When ON, the channeled pipeline drops the
+        -- enemy-count / boss-only / elite-only gates so the key stays held
+        -- even with no enemies in range, AND skips the per-frame cursor warp
+        -- so orbwalker's internal pathing OR your physical mouse drives the
+        -- character's travel direction without interference.
+        use_while_traveling = checkbox:new(pv('use_while_traveling', false), h('use_while_traveling')),
+
         -- Cast method: 0=Normal, 1=Key Press, 2=Force Stand Still + Key
         cast_method     = combo_box:new(pv('cast_method', default_cast_method), h('cast_method')),
         evade_key       = combo_box:new(pv('_evade_key_idx', 0), h('evade_key')),  -- index into KEY_PRESS_CODES; default 0 = Space
@@ -376,6 +384,14 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
     -- Self Cast
     e.self_cast:render('Self Cast', 'Cast on yourself — no target required (useful for buffs, movement, and AoE centered on player)')
     e.is_channeled:render('Channeled Spell', 'When this spell is actively channeling, the rotation holds off and lets it run. When the channel ends it re-casts automatically. Use for Incinerate, Flurry, and any hold-to-cast skill.')
+
+    -- Use While Traveling: only meaningful for Channeled + Key Press (the
+    -- pipeline that holds a key down).  Hidden otherwise so users don't
+    -- enable it on a spell where it has no effect.
+    if e.is_channeled:get() and (cast_method or 0) == 1 then
+        e.use_while_traveling:render('Use While Traveling',
+            'Keep the channel running even when no enemies are in range, and stop the auto-aim cursor warp so orbwalker (or your manual mouse) controls travel direction.  Pair with Whirlwind / Flurry-style hold-to-cast skills.  Resource and health gates still apply, so the channel still pauses when you run out of fury / mana.')
+    end
 
     local is_self = e.self_cast:get()
 
@@ -740,6 +756,7 @@ function spell_config.render(spell_id, display_name, equipped_ids, all_known_ids
         sync('stack_pri_reset',   e.stack_pri_reset:get())
         sync('stack_pri_targeted',e.stack_pri_targeted:get())
         sync('is_channeled', e.is_channeled:get())
+        if e.use_while_traveling then sync('use_while_traveling', e.use_while_traveling:get()) end
         sync('cast_method',  e.cast_method:get())
         sync('evade_aim_mode', e.evade_aim_mode:get())
         sync('skill_slot',   e.skill_slot:get())
@@ -841,6 +858,7 @@ function spell_config.get(spell_id)
         stack_pri_targeted   = pick('stack_pri_targeted',   e.stack_pri_targeted:get()),
 
         is_channeled    = pick('is_channeled', e.is_channeled:get()),
+        use_while_traveling = pick('use_while_traveling', e.use_while_traveling and e.use_while_traveling:get()),
         cast_method     = pick('cast_method',  e.cast_method:get()),
         evade_key       = evade_key_vk,
         evade_aim_mode  = pick('evade_aim_mode', e.evade_aim_mode:get()),

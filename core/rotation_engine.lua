@@ -344,7 +344,11 @@ local function _channeled_conditions_met(entry, targets, player_pos, settings, h
     local cfg = entry.cfg
     local spell_id = entry.spell_id
 
-    if not cfg.self_cast then
+    -- Travel mode and self_cast both bypass the enemy-presence gate so the
+    -- channel keeps running while the player is just moving around.
+    -- Resource / health / buff / min-enemy gates further down still apply,
+    -- so the channel pauses if the user runs out of fury, etc.
+    if not cfg.self_cast and not cfg.use_while_traveling then
         if not targets.is_valid or (targets.enemy_count or 0) <= 0 then return false end
         if cfg.boss_only  and not targets.has_boss  then return false end
         if cfg.elite_only and not targets.has_elite and not targets.has_boss and not targets.has_champion then return false end
@@ -702,38 +706,47 @@ function rotation_engine.tick(equipped_ids, settings)
             local vk       = entry.cfg.evade_key or 0x20
             local held     = _channeled_held[entry.spell_id] ~= nil
             local cond_met = _channeled_conditions_met(entry, targets, player_pos, settings, held)
+            -- Travel mode suppresses the cursor warp entirely so orbwalker's
+            -- internal pathing OR the player's physical mouse can drive
+            -- travel direction without the rotation snapping the OS cursor
+            -- onto a nearby enemy every frame.
+            local travel_mode = entry.cfg.use_while_traveling == true
             if cond_met and not held then
                 -- Aim cursor toward enemy before holding key
-                pcall(function()
-                    local aim_mode = entry.cfg.evade_aim_mode or 0
-                    if aim_mode ~= 0 and player_pos then
-                        local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
-                        if aim_pos then
-                            local sx, sy = _world_to_screen(aim_pos)
-                            if sx and sy then
-                                logger.log(string.format('channeled: cursor -> (%d, %d)', sx, sy))
-                                utility.send_mouse_move(sx, sy)
+                if not travel_mode then
+                    pcall(function()
+                        local aim_mode = entry.cfg.evade_aim_mode or 0
+                        if aim_mode ~= 0 and player_pos then
+                            local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
+                            if aim_pos then
+                                local sx, sy = _world_to_screen(aim_pos)
+                                if sx and sy then
+                                    logger.log(string.format('channeled: cursor -> (%d, %d)', sx, sy))
+                                    utility.send_mouse_move(sx, sy)
+                                end
                             end
                         end
-                    end
-                end)
+                    end)
+                end
                 pcall(function() utility.send_key_down(vk) end)
                 _channeled_held[entry.spell_id] = vk
-                logger.log('channeled: KEY DOWN spell=' .. tostring(entry.spell_id))
+                logger.log('channeled: KEY DOWN spell=' .. tostring(entry.spell_id) .. (travel_mode and ' [travel]' or ''))
             elseif cond_met and held then
                 -- Continuously re-aim toward enemy while channeling
-                pcall(function()
-                    local aim_mode = entry.cfg.evade_aim_mode or 0
-                    if aim_mode ~= 0 and player_pos then
-                        local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
-                        if aim_pos then
-                            local sx, sy = _world_to_screen(aim_pos)
-                            if sx and sy then
-                                utility.send_mouse_move(sx, sy)
+                if not travel_mode then
+                    pcall(function()
+                        local aim_mode = entry.cfg.evade_aim_mode or 0
+                        if aim_mode ~= 0 and player_pos then
+                            local aim_pos = _get_aim_target(aim_mode, player_pos, settings and settings.scan_range or 16)
+                            if aim_pos then
+                                local sx, sy = _world_to_screen(aim_pos)
+                                if sx and sy then
+                                    utility.send_mouse_move(sx, sy)
+                                end
                             end
                         end
-                    end
-                end)
+                    end)
+                end
             elseif not cond_met and held then
                 pcall(function() utility.send_key_up(vk) end)
                 _channeled_held[entry.spell_id] = nil
