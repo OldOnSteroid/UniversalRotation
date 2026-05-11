@@ -93,7 +93,7 @@ end
 local function _post(path, body_json)
     if not _write_tmp(body_json) then return nil end
     local cmd = string.format(
-        'curl -s -m 15 -X POST "%s%s" -H "Content-Type: application/json" -H "X-API-Key: %s" --data @"%s"',
+        'curl --ssl-revoke-best-effort -s -m 15 -X POST "%s%s" -H "Content-Type: application/json" -H "X-API-Key: %s" --data @"%s"',
         BASE_URL, path, API_KEY, _tmp_file
     )
     local out = _run(cmd)
@@ -104,7 +104,7 @@ end
 local function _patch(path, body_json)
     if not _write_tmp(body_json) then return nil end
     local cmd = string.format(
-        'curl -s -m 15 -X PATCH "%s%s" -H "Content-Type: application/json" -H "X-API-Key: %s" --data @"%s"',
+        'curl --ssl-revoke-best-effort -s -m 15 -X PATCH "%s%s" -H "Content-Type: application/json" -H "X-API-Key: %s" --data @"%s"',
         BASE_URL, path, API_KEY, _tmp_file
     )
     local out = _run(cmd)
@@ -117,7 +117,7 @@ end
 -- are tiny (listing JSON or a single profile JSON) so 5s is generous.
 local function _get(path)
     local cmd = string.format(
-        'curl -s -m 5 "%s%s" -H "X-API-Key: %s"',
+        'curl --ssl-revoke-best-effort -s -m 5 "%s%s" -H "X-API-Key: %s"',
         BASE_URL, path, API_KEY
     )
     return _run(cmd)
