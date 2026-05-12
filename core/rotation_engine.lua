@@ -142,6 +142,33 @@ local function _player_has_buff(required_hash, min_stacks)
     return false
 end
 
+-- Evaluate the full buff condition for a spell config.
+-- Returns true when the spell should be allowed to cast (condition passes).
+-- Handles Single (op=0), AND (op=1), and OR (op=2) modes.
+local function _eval_buff_condition(cfg)
+    local op = cfg.buff_operator or 0
+
+    -- Per-slot evaluator: true when the slot's has/missing check passes.
+    local function eval_slot(hash, mode, stacks)
+        if not hash or hash == 0 then return true end  -- unset slot is a no-op (passes)
+        local has = _player_has_buff(hash, stacks or 1)
+        return (mode == 0) and has or (not has)
+    end
+
+    if op == 0 then
+        return eval_slot(cfg.buff_hash, cfg.buff_mode or 0, cfg.buff_stacks)
+    end
+    local slot1 = eval_slot(cfg.buff_hash, cfg.buff_mode or 0, cfg.buff_stacks)
+    local slot2 = true
+    if cfg.buff_extra and cfg.buff_extra[1] then
+        local s = cfg.buff_extra[1]
+        slot2 = eval_slot(s.hash, s.mode or 0, s.stacks)
+    end
+    if op == 1 then return slot1 and slot2 end  -- AND: both must pass
+    if op == 2 then return slot1 or  slot2 end  -- OR: either must pass
+    return true
+end
+
 -- Returns current primary resource as a percentage (0-100), or nil if unavailable / unreliable
 local function _get_resource_pct()
     local lp = get_local_player()
@@ -397,12 +424,7 @@ local function _channeled_conditions_met(entry, targets, player_pos, settings, h
     if not _check_resource_condition(cfg) then return false end
     if not _check_health_condition(cfg)   then return false end
 
-    if cfg.require_buff then
-        local buff_mode = cfg.buff_mode or 0
-        local has = _player_has_buff(cfg.buff_hash, cfg.buff_stacks)
-        if buff_mode == 0 and not has then return false end
-        if buff_mode == 1 and     has then return false end
-    end
+    if cfg.require_buff and not _eval_buff_condition(cfg) then return false end
 
     local effective_min = math.max(cfg.min_enemies or 0, settings.global_min_enemies or 0)
     if effective_min > 0 and not (targets.has_boss or targets.has_champion) then
@@ -885,32 +907,26 @@ function rotation_engine.tick(equipped_ids, settings)
         end
 
         if cfg.require_buff then
-            local buff_mode = cfg.buff_mode or 0
-            local has = _player_has_buff(cfg.buff_hash, cfg.buff_stacks)
+            local pass = _eval_buff_condition(cfg)
             if settings.debug then
-                local key = tostring(spell_id) .. ':' .. tostring(cfg.buff_hash or 0)
-                if _last_buff_has[key] ~= has then
+                local op  = cfg.buff_operator or 0
+                local has = _player_has_buff(cfg.buff_hash, cfg.buff_stacks)
+                local op_names = { [0]='Single', [1]='AND', [2]='OR' }
+                local dk  = tostring(spell_id) .. ':' .. tostring(cfg.buff_hash or 0) .. ':op' .. tostring(op)
+                if _last_buff_has[dk] ~= (pass and 1 or 0) then
                     console.print(string.format(
-                        '[UniversalRota] %s buff gate: hash=%s mode=%s stacks>=%d has=%s',
-                        spell_name, tostring(cfg.buff_hash or 0),
-                        buff_mode == 1 and 'Missing' or 'Active',
+                        '[UniversalRota] %s buff gate [%s]: slot1_hash=%s mode=%s stacks>=%d slot1_has=%s PASS=%s',
+                        spell_name, op_names[op] or '?',
+                        tostring(cfg.buff_hash or 0),
+                        (cfg.buff_mode or 0) == 1 and 'Missing' or 'Active',
                         cfg.buff_stacks or 1,
-                        tostring(has)))
-                    _last_buff_has[key] = has
+                        tostring(has), tostring(pass)))
+                    _last_buff_has[dk] = (pass and 1 or 0)
                 end
             end
-            if buff_mode == 0 then
-                -- Active mode: only cast when buff is present at >= min stacks
-                if not has then
-                    logger.log('  SKIP: required buff not active')
-                    goto next_spell
-                end
-            else
-                -- Missing mode: only cast when buff is absent or below min stacks
-                if has then
-                    logger.log('  SKIP: buff already active (Missing mode)')
-                    goto next_spell
-                end
+            if not pass then
+                logger.log('  SKIP: buff condition not met')
+                goto next_spell
             end
         end
 
