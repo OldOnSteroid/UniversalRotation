@@ -152,7 +152,8 @@ local function _eval_buff_condition(cfg)
     local function eval_slot(hash, mode, stacks)
         if not hash or hash == 0 then return true end  -- unset slot is a no-op (passes)
         local has = _player_has_buff(hash, stacks or 1)
-        return (mode == 0) and has or (not has)
+        if mode == 0 then return has end
+        return not has
     end
 
     if op == 0 then
